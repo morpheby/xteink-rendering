@@ -306,7 +306,11 @@ class Calibration {
     // Cropped uploads stay disabled until the specific addressing behavior is
     // measured. Even when enabled, activation is restored to full visible
     // lines.
-    Rect uploadRect = croppedUploadValidated ? expanded : Rect{0, 0, 800, 480};
+    // With a full-height activation, cropped writes could expose stale
+    // selectors outside the uploaded rows. Until a separate RAM hold baseline
+    // is implemented, crop only when activation is confined to those same rows.
+    Rect uploadRect = croppedUploadValidated && verticalWindowValidated
+                          ? expanded : Rect{0, 0, 800, 480};
     if (!upload(uploadRect)) return fail();
     const auto bank = candidates(parameters, holdRail);
     if (!transport_.activate(bank, {0, expanded.y, 800, expanded.height},

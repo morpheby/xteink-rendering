@@ -77,7 +77,12 @@ int main() {
   assert(lab.cycles == 1 && lab.driveCount == 111600);
   assert(pixel(t.uploads[2], 560, 420));
   assert(!pixel(t.uploads[3], 560, 420));  // gray ref=10
+  lab.croppedUploadValidated=true;
+  lab.verticalWindowValidated=false;
+  uint32_t before=t.bytes;
   assert(lab.start(10, false));
+  assert(t.bytes-before==96000); // full activation never exposes stale cropped RAM
+
   assert(lab.poll(15));
   assert(lab.driveCount == 102600);
   assert(!pixel(t.uploads[4], 560, 420) &&

@@ -103,6 +103,19 @@ int main() {
   assert(lab.poll(51));
   assert(lab.job() == decltype(lab)::Job::Failed);
   assert(lab.cycles == 5);  // failures never become completed observations
+  lab.croppedUploadValidated=false;
+  t.state = Fake::Status::Fault;
+  t.result = Fake::Result::Complete;
+  assert(lab.start(60));
+  lab.poll(61);
+  lab.poll(62);
+  assert(lab.poll(63));
+  assert(lab.uploadedBytes() ==
+         192000);  // reset never underflows prior accounting
+  assert(lab.powerOff(64));
+  assert(lab.poll(65));
+  assert(lab.cycles == 6);
+  assert(lab.uploadedBytes() == 0 && lab.duration == 1);
   std::cout << "calibration: endpoint preparation, wire selectors, held "
                "references, repeats, conditioning, timeout passed\n";
 }

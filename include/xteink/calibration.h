@@ -100,6 +100,14 @@ template<class Transport> class Calibration {
       uint16_t x=uint16_t(130+c*215);
       char label[2]={char('A'+c),0}; text(x+75,72,label,3);
       rect(second_,{x,110,190,90},false);
+      // Bottom 15 rows compare deterministic B/W ramps under each relative
+      // waveform; the upper 75 rows remain pure B or W starts.
+      Settings bw;
+      for(uint16_t dx=0;dx<190;++dx) for(uint16_t dy=0;dy<15;++dy) {
+        const uint8_t luma=uint8_t(uint32_t(dx)*255/189);
+        packedBit(second_,size_t(185+dy)*Width+x+dx,quantize(luma,x+dx,185+dy,bw).base);
+        packedBit(second_,size_t(315+dy)*Width+x+dx,quantize(luma,x+dx,315+dy,bw).base);
+      }
       text(x,207,"BLACK START");text(x,337,"WHITE START");
       text(x,360,"F");number(x+15,360,parameters[c].frames);
       text(x+65,360,"R");number(x+80,360,parameters[c].repeats);

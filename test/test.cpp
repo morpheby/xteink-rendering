@@ -35,6 +35,6 @@ int main() {
   s.palette.calibrated=false; assert(!f.plan(s));
   const auto bank=candidates({Pulse{1,2,0,1,1},Pulse{1,4,0,1,1},Pulse{1,6,0,1,1}});
   for(auto row:bank) { int frames=0; for(int i=1;i<=4;++i) frames+=row[i]&63; assert(frames==7); }
-  assert((bank[4][1]>>6)==3);  // hold is floating hypothesis, never source VSS by implication
+  assert((bank[4][1]>>6)==3);  // hold is a raw code under test, not a zero-field assertion
   std::cout<<"rendering: history, failures, masks, old/new connectivity, palette, waveform timing passed\n";
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include "rendering.h"
 #include "waveform.h"
+#include "waveform_inspection.h"
 
 namespace x4render {
 // Display-independent diagnostic layout. All drawing is into two reusable
@@ -27,16 +28,17 @@ class Calibration {
   uint32_t duration{0}, driveCount{0}, cycles{0};
   Rect requested{}, expanded{};
   std::array<Pulse, 3> parameters{
-      {{1, 2, 0, 1, 1}, {1, 4, 0, 1, 1}, {1, 6, 0, 1, 1}}};
-  uint8_t holdRail{3};
+      {{2, 2, 0, 1, 1}, {2, 4, 0, 1, 1}, {2, 6, 0, 1, 1}}};
+  uint8_t holdRail{0};
+  BwPreparation bwPreparation{};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
-  bool start(uint32_t now, bool prepare = true, uint8_t rotation = 0,
+  bool start(uint32_t now, bool prepare = true, bool rotate = false,
              bool conditioning = false) {
-    if (busy() || !first_.data()) return false;
+    if (busy() || !first_.data() || !bwPreparation.valid() || holdRail > 3)
+      return false;
     for (auto p : parameters)
       if (!p.valid() || p.repeats != parameters[0].repeats) return false;
-    rotation_ = rotation % 3;
     conditioning_ = conditioning;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
@@ -50,6 +52,9 @@ class Calibration {
       references_ = false;
       if (!conditioning) prepare_ = true;
     }
+    // One owner for rotation: explicit or implicit rebuild resets it. A
+    // rejected/overlapping request never advances it.
+    rotation_ = prepare_ ? 0 : uint8_t((rotation_ + (rotate ? 1 : 0)) % 3);
     bytesAtStart_ = transport_.uploadedBytes();
     if (transport_.status() == Transport::Status::Off) {
       if (!transport_.powerOn(now)) return fail();
@@ -109,7 +114,20 @@ class Calibration {
   void invalidate() {
     references_ = false;
     job_ = Job::Idle;
+    rotation_ = 0;
   }
+  uint8_t rotation() const { return rotation_; }
+  uint8_t programmedRotation() const { return programmedRotation_; }
+  const Lut* settleLut(uint8_t row) const {
+    return settleValid_ && row < 5 ? &settleBank_[row] : nullptr;
+  }
+  const Lut* preparationLut(uint8_t row) const {
+    return preparationValid_ && row < 5 ? &preparationBank_[row] : nullptr;
+  }
+  bool factoryPreparation() const { return factoryPreparation_; }
+  uint32_t waveformId() const { return waveformId_; }
+  Rect activationWindow() const { return lastActivation_; }
+  uint8_t programmedHoldRail() const { return programmedHoldRail_; }
 
  private:
   bool fail() {
@@ -229,7 +247,12 @@ class Calibration {
     first_.clear(255);
     second_.clear(255);
     text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
-    text(18, 43, "RAW RAIL CODES - BRIGHTNESS ORDER UNKNOWN");
+    text(18, 43, "OPPOSITE FIRST - THEN A B C");
+    if (bwPreparation.programmable) {
+      text(18, 65, "BW F", 1);
+      number(43, 62, bwPreparation.frames);
+    } else
+      text(18, 65, "BW OTP", 1);
     for (uint8_t c = 0; c < 3; ++c) {
       uint16_t x = uint16_t(130 + c * 215 + (c == 2 ? 12 : 0));
       char label[2] = {char('A' + c), 0};
@@ -269,8 +292,24 @@ class Calibration {
     text(220, 432, "WHITE");
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
-    if (!upload({0, 0, 800, 480}) || !transport_.activateOtp(false, now))
-      return fail();
+    if (!upload({0, 0, 800, 480})) return fail();
+    bool activated;
+    if (bwPreparation.programmable) {
+      const auto bank = preparation(bwPreparation, holdRail);
+      activated = transport_.activate(bank, {0, 0, 800, 480}, false, now);
+      if (activated) {
+        preparationBank_ = bank;
+        preparationValid_ = true;
+        factoryPreparation_ = false;
+      }
+    } else {
+      activated = transport_.activateOtp(false, now);
+      if (activated) {
+        preparationValid_ = false;
+        factoryPreparation_ = true;
+      }
+    }
+    if (!activated) return fail();
     job_ = Job::Base;
     return true;
   }
@@ -310,15 +349,29 @@ class Calibration {
     // selectors outside the uploaded rows. Until a separate RAM hold baseline
     // is implemented, crop only when activation is confined to those same rows.
     Rect uploadRect = croppedUploadValidated && verticalWindowValidated
-                          ? expanded : Rect{0, 0, 800, 480};
+                          ? expanded
+                          : Rect{0, 0, 800, 480};
     if (!upload(uploadRect)) return fail();
     const auto bank = candidates(parameters, holdRail);
     if (!transport_.activate(bank, {0, expanded.y, 800, expanded.height},
                              verticalWindowValidated, now))
       return fail();
+    // Save the exact bytes only after the transport accepted activation.
+    settleBank_ = bank;
+    settleValid_ = true;
+    programmedRotation_ = rotation_;
+    programmedHoldRail_ = holdRail;
+    ++waveformId_;
+    lastActivation_ = verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
     job_ = conditioning_ ? Job::Conditioning : Job::Settle;
     return true;
   }
+  LutBank settleBank_{}, preparationBank_{};
+  bool settleValid_{false}, preparationValid_{false},
+      factoryPreparation_{false};
+  uint8_t programmedRotation_{0}, programmedHoldRail_{0};
+  uint32_t waveformId_{0};
+  Rect lastActivation_{};
   Transport& transport_;
   Buffer first_, second_;
   Job job_{Job::Idle};

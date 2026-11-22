@@ -81,7 +81,7 @@ int main() {
     assert(frames == 7);
   }
   assert((bank[4][1] >> 6) ==
-         3);  // hold is a raw code under test, not a zero-field assertion
+         0);  // hold is a raw code under test, not a zero-field assertion
   std::cout << "rendering: history, failures, masks, old/new connectivity, "
                "palette, waveform timing passed\n";
 }

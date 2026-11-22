@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='xteink-rendering-') as directory:
-    for name in ('test', 'calibration'):
+    for name in ('test', 'calibration', 'waveform'):
         executable = Path(directory) / name
         subprocess.run([
             os.environ.get('CXX', 'c++'), '-std=c++17', '-Wall', '-Wextra',

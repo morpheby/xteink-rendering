@@ -25,6 +25,7 @@ struct Fake {
   bool otp = false, vertical = false;
   Window activation{};
   std::vector<std::vector<uint8_t>> uploads;
+  std::vector<x4render::LutBank> banks;
   void reset() {
     state = Status::Off;
     bytes = 0;
@@ -50,8 +51,9 @@ struct Fake {
     otp = true;
     return true;
   }
-  bool activate(const x4render::LutBank&, Window w, bool v, uint32_t) {
+  bool activate(const x4render::LutBank& bank, Window w, bool v, uint32_t) {
     assert(w.x == 0 && w.width == 800);
+    banks.push_back(bank);
     activation = w;
     vertical = v;
     return true;
@@ -77,11 +79,12 @@ int main() {
   assert(lab.cycles == 1 && lab.driveCount == 111600);
   assert(pixel(t.uploads[2], 560, 420));
   assert(!pixel(t.uploads[3], 560, 420));  // gray ref=10
-  lab.croppedUploadValidated=true;
-  lab.verticalWindowValidated=false;
-  uint32_t before=t.bytes;
+  lab.croppedUploadValidated = true;
+  lab.verticalWindowValidated = false;
+  uint32_t before = t.bytes;
   assert(lab.start(10, false));
-  assert(t.bytes-before==96000); // full activation never exposes stale cropped RAM
+  assert(t.bytes - before ==
+         96000);  // full activation never exposes stale cropped RAM
 
   assert(lab.poll(15));
   assert(lab.driveCount == 102600);
@@ -108,7 +111,7 @@ int main() {
   assert(lab.poll(51));
   assert(lab.job() == decltype(lab)::Job::Failed);
   assert(lab.cycles == 5);  // failures never become completed observations
-  lab.croppedUploadValidated=false;
+  lab.croppedUploadValidated = false;
   t.state = Fake::Status::Fault;
   t.result = Fake::Result::Complete;
   assert(lab.start(60));
@@ -121,6 +124,53 @@ int main() {
   assert(lab.poll(65));
   assert(lab.cycles == 6);
   assert(lab.uploadedBytes() == 0 && lab.duration == 1);
+  // Rebuild/rotate/repeat share one rotation state. Failed requests cannot
+  // advance it, and the immutable programmed snapshot matches the actual bus.
+  Fake rotated;
+  x4render::Calibration<Fake> r(rotated);
+  assert(r.allocate());
+  r.parameters = {{{2, 2, 6, 1, 1}, {2, 4, 6, 1, 1}, {2, 6, 6, 1, 1}}};
+  assert(r.start(0));
+  r.poll(1);
+  r.poll(2);
+  r.poll(3);
+  assert(r.rotation() == 0);
+  assert(*r.settleLut(2) == rotated.banks.back()[2]);
+  const auto saved = *r.settleLut(2);
+  r.parameters[0].frames = 3;
+  assert(*r.settleLut(2) == saved);
+  r.parameters[0].frames = 2;
+  assert(r.start(10, false, true));
+  assert(r.rotation() == 1);
+  assert(!r.start(11, false, true));
+  assert(r.rotation() == 1);
+  r.poll(12);
+  assert(r.programmedRotation() == 1);
+  assert(r.start(20, false));
+  r.poll(21);
+  assert(r.rotation() == 1);
+  assert(r.start(30, true));
+  r.poll(31);
+  r.poll(32);
+  assert(r.rotation() == 0);
+  assert(r.start(40, false));
+  r.poll(41);
+  assert(r.rotation() == 0);
+  // Programmable B/W duration belongs only to preparation. Factory OTP
+  // remains available, and diagnostics cannot invent its unrecovered payload.
+  r.bwPreparation = {true, 37, 2};
+  assert(r.start(50, true));
+  assert(rotated.banks.back() == x4render::preparation(r.bwPreparation, 0));
+  assert(r.preparationLut(3)->at(1) == uint8_t(0x40 | 37));
+  assert(r.preparationLut(1)->at(1) == uint8_t(0x80 | 37));
+  r.poll(51);
+  r.poll(52);
+  assert(r.settleLut(2)->at(1) == 0x46);
+  r.bwPreparation = {false, 37, 2};
+  assert(r.start(60, true));
+  assert(r.factoryPreparation() && !r.preparationLut(0));
+  r.poll(61);
+  r.poll(62);
   std::cout << "calibration: endpoint preparation, wire selectors, held "
                "references, repeats, conditioning, timeout passed\n";
 }

@@ -2,7 +2,7 @@
 #include "rendering.h"
 #include "waveform.h"
 
-namespace xteink {
+namespace x4render {
 // Display-independent diagnostic layout. All drawing is into two reusable
 // packed WIRE planes; nothing may mutate them while the transport is busy.
 template<class Transport> class Calibration {
@@ -53,7 +53,7 @@ template<class Transport> class Calibration {
  private:
   bool fail() { result_="invalid transaction"; job_=Job::Failed; references_=false; return false; }
   void rect(Buffer& plane, Rect r, bool value) {
-    for(uint16_t y=r.y;y<r.y+r.height;++y) for(uint16_t x=r.x;x<r.x+r.width;++x) bit(plane,size_t(y)*Width+x,value);
+    for(uint16_t y=r.y;y<r.y+r.height;++y) for(uint16_t x=r.x;x<r.x+r.width;++x) packedBit(plane,size_t(y)*Width+x,value);
   }
   static std::array<uint8_t,7> glyph(char c) {
     // Original compact 5x7 lettering; no borrowed font dependency.
@@ -147,4 +147,4 @@ template<class Transport> class Calibration {
   uint8_t rotation_{0}; uint32_t started_{0},bytesAtStart_{0},uploaded_{0};
   const char* result_{"idle"};
 };
-} // namespace xteink
+} // namespace x4render

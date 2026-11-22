@@ -10,7 +10,7 @@
 #include <esp_heap_caps.h>
 #endif
 
-namespace xteink {
+namespace x4render {
 constexpr uint16_t Width = 800, Height = 480;
 constexpr size_t Pixels = size_t(Width) * Height, PlaneBytes = Pixels / 8;
 struct Free { void operator()(uint8_t* p) const { std::free(p); } };
@@ -89,11 +89,11 @@ inline Shade quantize(uint8_t luma, uint16_t x, uint16_t y, const Settings& s) {
   return s.palette.shades[s.palette.count-1];
 }
 inline bool same(Shade a, Shade b) { return a.base==b.base && a.selector==b.selector; }
-inline void bit(Buffer& b, size_t i, bool value) {
+inline void packedBit(Buffer& b, size_t i, bool value) {
   const uint8_t mask=uint8_t(0x80u>>(i%8));
   if (value) b[i/8] |= mask; else b[i/8] &= uint8_t(~mask);
 }
-inline bool bit(const Buffer& b, size_t i) { return b[i/8] & (0x80u>>(i%8)); }
+inline bool packedBit(const Buffer& b, size_t i) { return b[i/8] & (0x80u>>(i%8)); }
 // Two 8-bit frames; mask and two reusable wire planes. No quantized history.
 // Draws are rejected while a transaction borrows the target, so async lifetimes
 // cannot commit a newer caller frame. Both successful passes precede commit.
@@ -117,16 +117,16 @@ class Frames {
     for (uint16_t y=0;y<Height;++y) for (uint16_t x=0;x<Width;++x) {
       const size_t i=size_t(y)*Width+x;
       if (resync || !same(quantize(displayed[i],x,y,previous),quantize(target[i],x,y,current))) {
-        bit(mask,i,true); requested.include(x,y);
+        packedBit(mask,i,true); requested.include(x,y);
       }
     }
     // Margin includes only a small user-selected neighborhood; full-line
     // padding never broadens this drive mask.
     if (!requested.empty() && settings.margin) {
       std::memcpy(dtm1.data(),mask.data(),PlaneBytes);
-      for (int y=0;y<Height;++y) for(int x=0;x<Width;++x) if(bit(dtm1,size_t(y)*Width+x))
+      for (int y=0;y<Height;++y) for(int x=0;x<Width;++x) if(packedBit(dtm1,size_t(y)*Width+x))
         for(int dy=-settings.margin;dy<=settings.margin;++dy) for(int dx=-settings.margin;dx<=settings.margin;++dx)
-          if(x+dx>=0 && x+dx<Width && y+dy>=0 && y+dy<Height) bit(mask,size_t(y+dy)*Width+x+dx,true);
+          if(x+dx>=0 && x+dx<Width && y+dy>=0 && y+dy<Height) packedBit(mask,size_t(y+dy)*Width+x+dx,true);
     }
     if (settings.mode==Mode::DitherSettle) {
       // Fixed-point closure on the union of OLD and NEW gray connectivity.
@@ -136,16 +136,16 @@ class Frames {
         grew=false;
         for (uint16_t y=0;y<Height;++y) for (uint16_t x=0;x<Width;++x) {
           size_t i=size_t(y)*Width+x;
-          if (bit(mask,i)) continue;
+          if (packedBit(mask,i)) continue;
           const auto old=quantize(displayed[i],x,y,previous), next=quantize(target[i],x,y,current);
           if (!old.selector && !next.selector) continue;
-          if ((x&&bit(mask,i-1)) || (x+1<Width&&bit(mask,i+1)) || (y&&bit(mask,i-Width)) ||
-              (y+1<Height&&bit(mask,i+Width))) { bit(mask,i,true); grew=true; }
+          if ((x&&packedBit(mask,i-1)) || (x+1<Width&&packedBit(mask,i+1)) || (y&&packedBit(mask,i-Width)) ||
+              (y+1<Height&&packedBit(mask,i+Width))) { packedBit(mask,i,true); grew=true; }
         }
       } while (grew);
     }
     for (uint16_t y=0;y<Height;++y) for (uint16_t x=0;x<Width;++x)
-      if (bit(mask,size_t(y)*Width+x)) { expanded.include(x,y); ++driven; }
+      if (packedBit(mask,size_t(y)*Width+x)) { expanded.include(x,y); ++driven; }
     phase=driven ? Phase::Planned : Phase::Complete;
     return true;
   }
@@ -155,8 +155,8 @@ class Frames {
       const size_t i=size_t(y)*Width+x;
       const auto q=quantize(target[i],x,y,current);
       // Raw selector 00=hold, 01=black, 10=white for absolute preparation.
-      uint8_t selector=bit(mask,i) ? uint8_t(q.selector && current.mode==Mode::SingleSettle ? 2 : q.base ? 2 : 1) : 0;
-      bit(dtm1,i,selector&2); bit(dtm2,i,selector&1);
+      uint8_t selector=packedBit(mask,i) ? uint8_t(q.selector && current.mode==Mode::SingleSettle ? 2 : q.base ? 2 : 1) : 0;
+      packedBit(dtm1,i,selector&2); packedBit(dtm2,i,selector&1);
     }
     phase=Phase::Preparing;
   }
@@ -165,8 +165,8 @@ class Frames {
     if(phase!=Phase::Prepared) return false;
     dtm1.clear(); dtm2.clear();
     for(uint16_t y=0;y<Height;++y) for(uint16_t x=0;x<Width;++x) {
-      size_t i=size_t(y)*Width+x; uint8_t s=bit(mask,i)?quantize(target[i],x,y,current).selector:0;
-      bit(dtm1,i,s&2); bit(dtm2,i,s&1);
+      size_t i=size_t(y)*Width+x; uint8_t s=packedBit(mask,i)?quantize(target[i],x,y,current).selector:0;
+      packedBit(dtm1,i,s&2); packedBit(dtm2,i,s&1);
     }
     phase=Phase::Settling; return true;
   }
@@ -182,4 +182,4 @@ class Frames {
   Knowledge knowledge{Knowledge::Unknown}; Phase phase{Phase::Idle};
   Rect requested{},expanded{}; uint32_t driven{0};
 };
-}  // namespace xteink
+}  // namespace x4render

@@ -1,7 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
-namespace xteink {
+namespace x4render {
 using Lut = std::array<uint8_t,49>;
 using LutBank = std::array<Lut,5>;
 // Experimental UC8279 7-byte group interpretation, consistent with the SDK's
@@ -49,4 +49,4 @@ constexpr LutBank candidates(std::array<Pulse,3> p, uint8_t holdRail=3) {
 }
 static_assert(pulse(Pulse{})[1]==0x44,"wire encoding changed");
 static_assert(!Pulse{1,64,0,1,0}.valid(),"phase overflow must fail");
-} // namespace xteink
+} // namespace x4render

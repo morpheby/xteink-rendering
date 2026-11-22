@@ -45,3 +45,32 @@ are independent. The last calibration rectangle extends through x761.
 The project uses the MIT license. FreeInk and the OpenX4 community retain their
 upstream credits in their repositories; this library does not incorporate vendor
 waveform blobs. The Bayer threshold matrix is the standard ordered pattern.
+
+## Second calibration round
+
+Panel observations supplied by the user: source code 1 darkens, code 2 brightens,
+and hold code 0 preserved references in the tested setup. Black-start patches
+were uniform while white-start patches were noisy; no consistent palette exists.
+These observations do not establish matching-silicon voltages or long-term hold.
+
+The candidate sequence is now common opposite prefix, candidate A/B/C pulse,
+then equalizing hold padding. Code 2 as primary gives darkening-prefix code 1
+followed by different brightening doses. Hold defaults to the observed code 0.
+Rotation lives in Calibration alone: rebuild resets it, repeat preserves it,
+rotate advances only accepted jobs. Implicit reconstruction after conditioning
+also resets rotation. Diagnostic snapshots store exactly the bytes accepted by
+transport activation and survive subsequent control changes.
+
+`waveform_inspection.h` exposes exact 49-byte hex/binary records and compact
+binary-rail timelines. In `g0 x1 s0 x1[01*3 10*6] s1 x1[00*57]`, the two-bit values
+are source-level codes and counts are programmed frame fields. Group/state
+repeats are explicit. This is a model of programmed data, not oscilloscope data.
+Trailing groups remain visible in the full raw record; electrical end behavior
+is still unresolved.
+
+B/W preparation can use factory OTP, whose payload has not been read back, or
+programmable endpoint drive. Programmable preparation applies code 1 to wire
+selector 10 (black) and code 2 to selector 11 (white), for an adjustable 1–63 frame
+count and 1–16 group repeats, then one hold count. VCOM remains code 00. Longer
+drive is a test for endpoint saturation/noise, not a proven noise fix. Defaults
+are 16 frames and one repeat, with factory OTP selected until explicitly changed.

@@ -212,7 +212,7 @@ class Calibration {
     text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
     text(18, 43, "RAW RAIL CODES - BRIGHTNESS ORDER UNKNOWN");
     for (uint8_t c = 0; c < 3; ++c) {
-      uint16_t x = uint16_t(130 + c * 215);
+      uint16_t x = uint16_t(130 + c * 215 + (c == 2 ? 12 : 0));
       char label[2] = {char('A' + c), 0};
       text(x + 75, 72, label, 3);
       rect(second_, {x, 110, 190, 90}, false);
@@ -276,9 +276,9 @@ class Calibration {
       select({0, 0, 800, 480}, 1);
     else {
       for (uint8_t c = 0; c < 3; ++c) {
-        select({uint16_t(130 + c * 215), 110, 190, 90},
+        select({uint16_t(130 + c * 215 + (c == 2 ? 12 : 0)), 110, 190, 90},
                uint8_t(1 + (c + rotation_) % 3));
-        select({uint16_t(130 + c * 215), 240, 190, 90},
+        select({uint16_t(130 + c * 215 + (c == 2 ? 12 : 0)), 240, 190, 90},
                uint8_t(1 + (c + rotation_) % 3));
       }
       if (!references_) select({550, 413, 200, 45}, 2);

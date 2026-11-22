@@ -158,11 +158,18 @@ int main() {
   assert(r.rotation() == 0);
   // Programmable B/W duration belongs only to preparation. Factory OTP
   // remains available, and diagnostics cannot invent its unrecovered payload.
-  r.bwPreparation = {true, 37, 2};
+  r.bwPreparation = {true, 37, 2, 5};
+  const auto uploadStart = rotated.uploads.size();
   assert(r.start(50, true));
+  for (auto byte : rotated.uploads[uploadStart])
+    assert(byte == 255);  // every visible pixel selects black or white drive
+  assert(!pixel(rotated.uploads[uploadStart + 1], 140, 120));
+  assert(pixel(rotated.uploads[uploadStart + 1], 140, 250));
   assert(rotated.banks.back() == x4render::preparation(r.bwPreparation, 0));
-  assert(r.preparationLut(3)->at(1) == uint8_t(0x40 | 37));
-  assert(r.preparationLut(1)->at(1) == uint8_t(0x80 | 37));
+  assert(r.preparationLut(3)->at(1) == uint8_t(0x80 | 5));
+  assert(r.preparationLut(3)->at(2) == uint8_t(0x40 | 37));
+  assert(r.preparationLut(1)->at(1) == uint8_t(0x40 | 5));
+  assert(r.preparationLut(1)->at(2) == uint8_t(0x80 | 37));
   r.poll(51);
   r.poll(52);
   assert(r.settleLut(2)->at(1) == 0x46);

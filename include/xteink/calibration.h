@@ -251,6 +251,10 @@ class Calibration {
     if (bwPreparation.programmable) {
       text(18, 65, "BW F", 1);
       number(43, 62, bwPreparation.frames);
+      text(18, 85, "BW I", 1);
+      number(43, 82, bwPreparation.inversionFrames);
+      text(88, 65, "R", 1);
+      number(99, 62, bwPreparation.repeats);
     } else
       text(18, 65, "BW OTP", 1);
     for (uint8_t c = 0; c < 3; ++c) {

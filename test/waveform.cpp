@@ -37,11 +37,21 @@ int main() {
     }
   assert(candidates({Pulse{2, 2, 6, 1, 1}, Pulse{2, 4, 7, 1, 1},
                      Pulse{2, 6, 6, 1, 1}}) == LutBank{});
-  const auto prep = preparation({true, 63, 16}, 0);
-  assert(prep[Row[2]][1] == 0x7F && prep[Row[3]][1] == 0xBF);
-  for (auto row : prep) assert(counts(row) == 1024);
-  assert(preparation({true, 0, 1}) == LutBank{});
-  assert(preparation({true, 16, 0}) == LutBank{});
+  const auto prep = preparation({true, 63, 16, 63}, 0);
+  assert(prep[Row[2]][1] == 0xBF && prep[Row[2]][2] == 0x7F);
+  assert(prep[Row[3]][1] == 0x7F && prep[Row[3]][2] == 0xBF);
+  assert(prep[Row[2]][3] == 1 && prep[Row[3]][3] == 1);
+  for (auto row : prep) assert(counts(row) == 2032);
+  const auto asymmetric = preparation({true, 37, 2, 5}, 0);
+  assert(asymmetric[Row[2]][1] == 0x85 && asymmetric[Row[2]][2] == 0x65);
+  assert(asymmetric[Row[3]][1] == 0x45 && asymmetric[Row[3]][2] == 0xA5);
+  for (auto row : asymmetric) assert(counts(row) == 86);
+  const auto legacy = preparation({true, 63, 16, 0}, 0);
+  assert(legacy[Row[2]][1] == 0 && legacy[Row[2]][2] == 0x7F);
+  for (auto row : legacy) assert(counts(row) == 1024);
+  assert(preparation({true, 0, 1, 16}) == LutBank{});
+  assert(preparation({true, 16, 0, 16}) == LutBank{});
+  assert(preparation({true, 16, 1, 64}) == LutBank{});
   std::cout << "waveform: opposite-first bytes, binary/hex inspection, aligned "
                "repeats and programmable B/W passed\n";
 }

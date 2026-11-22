@@ -67,24 +67,32 @@ constexpr LutBank candidates(std::array<Pulse, 3> p, uint8_t holdRail = 0) {
 }
 struct BwPreparation {
   bool programmable{false};
-  uint8_t frames{16}, repeats{1};
+  uint8_t frames{16}, repeats{1}, inversionFrames{16};
   constexpr bool valid() const {
-    return frames >= 1 && frames <= 63 && repeats >= 1 && repeats <= 16;
+    return frames >= 1 && frames <= 63 && repeats >= 1 && repeats <= 16 &&
+           inversionFrames <= 63;
   }
 };
 constexpr LutBank preparation(BwPreparation p, uint8_t holdRail = 0) {
   if (!p.valid() || holdRail > 3) return {};
   LutBank bank{};
   // B/W screen uses DTM1=1 and DTM2=image: black=10, white=11.
-  // One endpoint pulse plus one hold count; all rows have matching lengths.
-  for (auto& row : bank) row = held(p.frames + 1, p.repeats, holdRail);
-  bank[0] = held(p.frames + 1, p.repeats, 0);
+  // Drive every pixel toward the COMPLEMENT of its requested B/W value,
+  // then drive the requested endpoint, then hold. This is an experimental
+  // conditioning sequence, not a reconstruction of the factory OTP bank.
+  for (auto& row : bank)
+    row = held(p.inversionFrames + p.frames + 1, p.repeats, holdRail);
+  bank[0] = held(p.inversionFrames + p.frames + 1, p.repeats, 0);
   for (uint8_t selector : {uint8_t(2), uint8_t(3)}) {
     auto& row = bank[Row[selector]];
     row = {};
     row[0] = p.repeats;
-    row[1] = uint8_t(((selector == 2 ? 1 : 2) << 6) | p.frames);
-    row[2] = uint8_t((holdRail << 6) | 1);
+    const uint8_t targetRail = selector == 2 ? 1 : 2;
+    row[1] = p.inversionFrames
+                 ? uint8_t(((3 - targetRail) << 6) | p.inversionFrames)
+                 : 0;
+    row[2] = uint8_t((targetRail << 6) | p.frames);
+    row[3] = uint8_t((holdRail << 6) | 1);
     row[5] = row[6] = 1;
   }
   return bank;

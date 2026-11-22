@@ -74,3 +74,20 @@ selector 10 (black) and code 2 to selector 11 (white), for an adjustable 1–63 
 count and 1–16 group repeats, then one hold count. VCOM remains code 00. Longer
 drive is a test for endpoint saturation/noise, not a proven noise fix. Defaults
 are 16 frames and one repeat, with factory OTP selected until explicitly changed.
+
+## Inverted-image B/W preparation correction
+
+The earlier programmable B/W waveform omitted inverted-image drive. Following
+the user's observation of progressive white noise/deterioration, preparation
+now drives the complement of the requested image first, then the requested B/W
+endpoints, then one hold count. For requested black the source sequence is
+brightening code 2 → darkening code 1 → hold; requested white uses code 1 → code
+2 → hold. VCOM stays at programmed code 00 throughout. This adds the missing
+phase but does not claim a reconstruction of all factory OTP behavior.
+
+`BwPreparation::inversionFrames` independently controls 0–63 complement counts
+(default 16; zero deliberately disables it for comparison). `frames` remains the
+existing 1–63 target count. `repeats` repeats the entire complement/target/hold
+cycle. All five LUT rows have `(inversionFrames + frames + 1) * repeats` modeled
+counts. Raw binary/hex inspection includes every phase. Long settings remain
+subject to the transport's bounded BUSY deadline and physical validation.

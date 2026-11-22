@@ -25,11 +25,18 @@ struct Fake {
   bool otp = false, vertical = false;
   Window activation{};
   std::vector<std::vector<uint8_t>> uploads;
-  void reset() { state = Status::Off; }
+  void reset() {
+    state = Status::Off;
+    bytes = 0;
+  }
   Status status() const { return state; }
   uint32_t uploadedBytes() const { return bytes; }
   bool powerOn(uint32_t) {
     state = Status::Ready;
+    return true;
+  }
+  bool powerOff(uint32_t) {
+    state = Status::Off;
     return true;
   }
   Result poll(uint32_t) { return result; }

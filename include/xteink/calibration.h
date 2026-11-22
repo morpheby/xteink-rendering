@@ -14,6 +14,7 @@ class Calibration {
     Base,
     Settle,
     Conditioning,
+    PowerOff,
     Failed
   };
   explicit Calibration(Transport& transport) : transport_(transport) {}
@@ -40,7 +41,7 @@ class Calibration {
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
     started_ = now;
-    bytesAtStart_ = transport_.uploadedBytes();
+    uploaded_ = 0;
     duration = 0;
     result_ = "running";
     if (transport_.status() == Transport::Status::Fault ||
@@ -49,6 +50,7 @@ class Calibration {
       references_ = false;
       if (!conditioning) prepare_ = true;
     }
+    bytesAtStart_ = transport_.uploadedBytes();
     if (transport_.status() == Transport::Status::Off) {
       if (!transport_.powerOn(now)) return fail();
       job_ = Job::PowerOn;
@@ -67,6 +69,13 @@ class Calibration {
       job_ = Job::Failed;
       references_ = false;
       duration = now - started_;
+      uploaded_ = transport_.uploadedBytes() - bytesAtStart_;
+      return true;
+    }
+    if (job_ == Job::PowerOff) {
+      duration = now - started_;
+      job_ = Job::Idle;
+      result_ = "power off complete";
       return true;
     }
     if (job_ == Job::PowerOn) {
@@ -84,6 +93,16 @@ class Calibration {
     job_ = Job::Idle;
     result_ = "complete";
     uploaded_ = transport_.uploadedBytes() - bytesAtStart_;
+    return true;
+  }
+  bool powerOff(uint32_t now) {
+    if (busy() || transport_.status() != Transport::Status::Ready) return false;
+    started_ = now;
+    bytesAtStart_ = transport_.uploadedBytes();
+    uploaded_ = 0;
+    if (!transport_.powerOff(now)) return false;
+    job_ = Job::PowerOff;
+    result_ = "powering off";
     return true;
   }
   uint32_t uploadedBytes() const { return uploaded_; }

@@ -1,14 +1,28 @@
 #pragma once
 #include "rendering.h"
+#include "landscape.h"
 
 namespace x4render {
-enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random };
+enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
+                                LandscapeDither, LandscapeGray };
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
   plane.clear(image == TestImage::Black ? 0 : 255);
   if (image == TestImage::White || image == TestImage::Black) return;
+  if (image == TestImage::LandscapeDither || image == TestImage::LandscapeGray) {
+    Settings bw;
+    for (uint16_t y = 20; y < 460; ++y)
+      for (uint16_t x = 0; x < Width; ++x) {
+        const uint32_t i = uint32_t(y) * Width + x;
+        const bool white = image == TestImage::LandscapeGray
+                               ? landscapeBucket(i) >= 4
+                               : quantize(landscapeLuma(i), x, y, bw).base;
+        packedBit(plane, i, white);
+      }
+    return;
+  }
   auto rect = [&](int x, int y, int w, int h, bool white) {
     for (int py = y; py < y + h && py < Height; ++py)
       for (int px = x; px < x + w && px < Width; ++px)

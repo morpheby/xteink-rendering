@@ -13,6 +13,7 @@ class Calibration {
   enum class Job : uint8_t {
     Idle,
     PowerOn,
+    Prime,
     Base,
     Pause,
     Settle,
@@ -41,7 +42,7 @@ class Calibration {
                           TestImage::Calibration, 0);
   }
   bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
-    if (image < TestImage::White || image > TestImage::Random) return false;
+    if (image < TestImage::White || image > TestImage::LandscapeGray) return false;
     return startOperation(now, true, false, false, image, seed);
   }
   TestImage image() const { return image_; }
@@ -75,6 +76,7 @@ class Calibration {
     rotation_ = prepare_ ? 0 : uint8_t((rotation_ + (rotate ? 1 : 0)) % 3);
     bytesAtStart_ = transport_.uploadedBytes();
     if (transport_.status() == Transport::Status::Off) {
+      otpPrimed_ = false;
       if (!transport_.powerOn(now)) return fail();
       job_ = Job::PowerOn;
       return true;
@@ -102,6 +104,7 @@ class Calibration {
       return true;
     }
     if (job_ == Job::PowerOff) {
+      otpPrimed_ = false;
       duration = now - started_;
       job_ = Job::Idle;
       result_ = "power off complete";
@@ -110,9 +113,17 @@ class Calibration {
     if (job_ == Job::PowerOn) {
       return !beginPass(now);
     }
+    if (job_ == Job::Prime) {
+      otpPrimed_ = true;
+      // OTP may copy NEW to OLD. Rebuild and re-upload both planes before the
+      // programmable pass, without resetting or power-cycling the controller.
+      return !beginPass(now);
+    }
     if (job_ == Job::Base) {
+      if (factoryPreparation_) otpPrimed_ = true;
       prepare_ = false;
-      if (image_ != TestImage::Calibration) return complete(now, false);
+      if (image_ != TestImage::Calibration && image_ != TestImage::LandscapeGray)
+        return complete(now, false);
       if (pauseMs_) {
         baseCompleted_ = now;
         job_ = Job::Pause;
@@ -120,7 +131,7 @@ class Calibration {
       }
       return !beginSettle(now);
     }
-    return complete(now, !conditioning_);
+    return complete(now, !conditioning_ && image_ == TestImage::Calibration);
   }
   bool complete(uint32_t now, bool references) {
     duration = now - started_;
@@ -146,6 +157,7 @@ class Calibration {
     references_ = false;
     job_ = Job::Idle;
     rotation_ = 0;
+    otpPrimed_ = false;
     settleValid_ = preparationValid_ = factoryPreparation_ = false;
   }
   uint8_t rotation() const { return rotation_; }
@@ -287,6 +299,12 @@ class Calibration {
         std::snprintf(label, sizeof(label), "SEED %08lX", (unsigned long)seed_);
         text(20, 452, label, 2);
       }
+      if (image_ == TestImage::LandscapeDither || image_ == TestImage::LandscapeGray) {
+        text(10, 4, image_ == TestImage::LandscapeGray
+                         ? "LANDSCAPE - GRAY TRIAL - UNMEASURED TONES"
+                         : "LANDSCAPE - B-W DITHER", 1);
+        text(10, 467, "ANSEL ADAMS - NARA 519904", 1);
+      }
     } else {
     text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
     text(18, 43, "OPPOSITE FIRST - THEN A B C");
@@ -340,7 +358,18 @@ class Calibration {
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
     }
-    if (!upload({0, 0, 800, 480})) return fail();
+    // Unknown physical history must not be represented as "OLD was white".
+    // Match the normal driver's scrub: every requested pixel transitions.
+    for (size_t i = 0; i < first_.size(); ++i)
+      first_.data()[i] = uint8_t(~second_.data()[i]);
+    if (!upload({0, 0, 800, 480}, true)) return fail();
+    if (bwPreparation.programmable && bwPreparation.factoryPrime && !otpPrimed_) {
+      if (!transport_.activateOtp(false, now)) return fail();
+      factoryPreparation_ = true;
+      preparationValid_ = false;
+      job_ = Job::Prime;
+      return true;
+    }
     bool activated;
     if (bwPreparation.programmable) {
       const auto bank = preparation(bwPreparation, holdRail);
@@ -366,10 +395,12 @@ class Calibration {
     job_ = Job::Base;
     return true;
   }
-  bool upload(Rect r) {
+  bool upload(Rect r, bool bw = false) {
     typename Transport::Window w{r.x, r.y, r.width, r.height};
-    return transport_.upload(0x10, {first_.data(), first_.size()}, w) &&
-           transport_.upload(0x13, {second_.data(), second_.size()}, w);
+    // Match the proven driver. A NEW write may alter the controller's OLD
+    // baseline; commit our exact OLD/selector plane LAST on every operation.
+    return transport_.upload(0x13, {second_.data(), second_.size()}, w, bw ? 255 : 0) &&
+           transport_.upload(0x10, {first_.data(), first_.size()}, w, bw ? 255 : 0);
   }
   void select(Rect r, uint8_t selector) {
     rect(first_, r, selector & 2);
@@ -383,7 +414,15 @@ class Calibration {
     second_.clear();
     driveCount = 0;
     requested = {};
-    if (conditioning_)
+    const bool photo = image_ == TestImage::LandscapeGray;
+    if (photo) {
+      for (uint16_t y = 20; y < 460; ++y)
+        for (uint16_t x = 0; x < Width; ++x) {
+          const uint8_t bucket = landscapeBucket(uint32_t(y) * Width + x);
+          if (bucket > 0 && bucket < 7)
+            select({x, y, 1, 1}, uint8_t(1 + (bucket - 1) % 3));
+        }
+    } else if (conditioning_)
       select({0, 0, 800, 480}, 1);
     else {
       for (uint8_t c = 0; c < 3; ++c) {
@@ -401,13 +440,15 @@ class Calibration {
     // With a full-height activation, cropped writes could expose stale
     // selectors outside the uploaded rows. Until a separate RAM hold baseline
     // is implemented, crop only when activation is confined to those same rows.
-    Rect uploadRect = croppedUploadValidated && verticalWindowValidated
+    Rect uploadRect = !photo && croppedUploadValidated && verticalWindowValidated
                           ? expanded
                           : Rect{0, 0, 800, 480};
     if (!upload(uploadRect)) return fail();
     const auto bank = candidates(parameters, holdRail);
-    if (!transport_.activate(bank, {0, expanded.y, 800, expanded.height},
-                             verticalWindowValidated, now))
+    const Rect activation = !photo && verticalWindowValidated
+                                ? expanded : Rect{0, 0, 800, 480};
+    if (!transport_.activate(bank, {0, activation.y, 800, activation.height},
+                             !photo && verticalWindowValidated, now))
       return fail();
     // Save the exact bytes only after the transport accepted activation.
     settleBank_ = bank;
@@ -415,7 +456,7 @@ class Calibration {
     programmedRotation_ = rotation_;
     programmedHoldRail_ = holdRail;
     ++waveformId_;
-    lastActivation_ = verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
+    lastActivation_ = !photo && verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
     job_ = conditioning_ ? Job::Conditioning : Job::Settle;
     return true;
   }
@@ -429,6 +470,7 @@ class Calibration {
   Buffer first_, second_;
   Job job_{Job::Idle};
   bool references_{false}, prepare_{true}, conditioning_{false};
+  bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
   uint32_t seed_{0}, baseCompleted_{0};
   uint16_t pauseMs_{0};

@@ -75,6 +75,7 @@ struct BwPreparation {
   uint8_t activationFrames{2}, activationCycles{2}, referenceFrames{0},
       restFrames{3}, tailFrames{3}, whiteFrames{0}, restRail{0}, vcomRail{0};
   uint16_t pauseMs{0};
+  bool factoryPrime{false};
   constexpr bool valid() const {
     return frames >= 1 && frames <= 63 && repeats >= 1 && repeats <= 16 &&
            inversionFrames <= 63 && activationFrames <= 8 &&
@@ -113,8 +114,8 @@ constexpr LutBank preparation(BwPreparation p, uint8_t holdRail = 0) {
       }
       // The inversion/write pair alone is repeated, like the simple profile.
       lut[base] = p.referenceFrames ? 1 : p.repeats;
-      const bool black = row == Row[2];
-      const bool target = black || row == Row[3];
+      const bool black = row == Row[0] || row == Row[2];
+      const bool target = row != 0;
       const uint8_t rail = target ? (black ? 1 : 2) : rest;
       const uint8_t length = target ? (black ? p.frames : white) : longest;
       // After a white reference, black-target pixels are ALREADY at their
@@ -138,18 +139,19 @@ constexpr LutBank preparation(BwPreparation p, uint8_t holdRail = 0) {
     }
     return bank;
   }
-  // B/W screen uses DTM1=1 and DTM2=image: black=10, white=11.
+  // Absolute B/W depends on NEW only: 00/10 -> black, 01/11 -> white.
+  // Never let an unexpected OLD bit choose an idle row during preparation.
   // Drive every pixel toward the COMPLEMENT of its requested B/W value,
   // then drive the requested endpoint, then hold. This is an experimental
   // conditioning sequence, not a reconstruction of the factory OTP bank.
   for (auto& row : bank)
     row = held(p.inversionFrames + p.frames + 1, p.repeats, holdRail);
   bank[0] = held(p.inversionFrames + p.frames + 1, p.repeats, 0);
-  for (uint8_t selector : {uint8_t(2), uint8_t(3)}) {
+  for (uint8_t selector = 0; selector < 4; ++selector) {
     auto& row = bank[Row[selector]];
     row = {};
     row[0] = p.repeats;
-    const uint8_t targetRail = selector == 2 ? 1 : 2;
+    const uint8_t targetRail = (selector & 1) ? 2 : 1;
     row[1] = p.inversionFrames
                  ? uint8_t(((3 - targetRail) << 6) | p.inversionFrames)
                  : 0;

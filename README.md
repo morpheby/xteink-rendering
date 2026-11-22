@@ -42,7 +42,9 @@ The known x752 column observation comes from the existing esphome-xteink
 investigation. The transport must activate complete visible lines; upload windows
 are independent. The last calibration rectangle extends through x761.
 
-The project uses the MIT license. FreeInk and the OpenX4 community retain their
+The code uses the MIT license. The public-domain landscape photograph is
+credited separately in [assets/README.md](assets/README.md).
+FreeInk and the OpenX4 community retain their
 upstream credits in their repositories; this library does not incorporate vendor
 waveform blobs. The Bayer threshold matrix is the standard ordered pattern.
 

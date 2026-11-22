@@ -42,6 +42,7 @@ int main() {
   assert(prep[Row[3]][1] == 0x7F && prep[Row[3]][2] == 0xBF);
   assert(prep[Row[2]][3] == 1 && prep[Row[3]][3] == 1);
   for (auto row : prep) assert(counts(row) == 2032);
+  assert(prep[Row[0]] == prep[Row[2]] && prep[Row[1]] == prep[Row[3]]);
   const auto asymmetric = preparation({true, 37, 2, 5}, 0);
   assert(asymmetric[Row[2]][1] == 0x85 && asymmetric[Row[2]][2] == 0x65);
   assert(asymmetric[Row[3]][1] == 0x45 && asymmetric[Row[3]][2] == 0xA5);
@@ -55,6 +56,19 @@ int main() {
   BwPreparation c;
   c.programmable = c.conditioned = true;
   auto cb = preparation(c);
+  assert(cb[Row[0]] == cb[Row[2]] && cb[Row[1]] == cb[Row[3]]);
+  for (bool conditioned : {false,true}) {
+    BwPreparation absolute;
+    absolute.programmable=true; absolute.conditioned=conditioned;
+    const auto all=preparation(absolute);
+    for (unsigned old=0;old<256;++old)
+      for (unsigned next=0;next<256;++next)
+        for (unsigned bit=0;bit<8;++bit) {
+          const unsigned n=(next>>bit)&1;
+          const unsigned selector=(((old>>bit)&1)<<1)|n;
+          assert(all[Row[selector]] == all[Row[n ? 3 : 2]]);
+        }
+  }
   assert(cb[Row[2]][1] == 0x42 && cb[Row[2]][2] == 0x82);
   assert(cb[Row[2]][8] == 0 && cb[Row[2]][9] == 3);
   assert(cb[Row[2]][15] == 0x94 && cb[Row[2]][16] == 0x54);

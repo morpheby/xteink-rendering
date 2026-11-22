@@ -23,9 +23,12 @@ struct Fake {
   Result result = Result::Complete;
   uint32_t bytes = 0;
   bool otp = false, vertical = false, fullBw = false, accepted = true;
+  unsigned otpCalls = 0;
   Window activation{};
   std::vector<std::vector<uint8_t>> uploads;
   std::vector<x4render::LutBank> banks;
+  std::vector<uint8_t> commands;
+  std::vector<uint8_t> oldRam, newRam;
   void reset() {
     state = Status::Off;
     bytes = 0;
@@ -41,14 +44,20 @@ struct Fake {
     return true;
   }
   Result poll(uint32_t) { return result; }
-  bool upload(uint8_t, Plane p, Window w) {
+  bool upload(uint8_t command, Plane p, Window w, uint8_t = 0) {
     assert(p.size == 48000);
+    commands.push_back(command);
+    // Model a controller that advances OLD when NEW transmission begins.
+    // Explicit OLD must be written afterward; absolute B/W must tolerate OLD.
+    if (command == 0x13) { oldRam = newRam; newRam.assign(p.data,p.data+p.size); }
+    else oldRam.assign(p.data,p.data+p.size);
     uploads.emplace_back(p.data, p.data + p.size);
     bytes += w.width / 8 * w.height;
     return true;
   }
   bool activateOtp(bool, uint32_t) {
     otp = true;
+    ++otpCalls;
     return true;
   }
   bool activate(const x4render::LutBank& bank, Window w, bool v, uint32_t,
@@ -74,14 +83,14 @@ int main() {
   assert(!lab.start(1));
   lab.poll(2);
   assert(t.otp);
-  assert(!pixel(t.uploads[1], 140, 120));
-  assert(pixel(t.uploads[1], 140, 250));
+  assert(!pixel(t.uploads[0], 140, 120));
+  assert(pixel(t.uploads[0], 140, 250));
   lab.poll(3);
   assert(lab.busy());
   assert(lab.poll(4));
   assert(lab.cycles == 1 && lab.driveCount == 111600);
-  assert(pixel(t.uploads[2], 560, 420));
-  assert(!pixel(t.uploads[3], 560, 420));  // gray ref=10
+  assert(pixel(t.uploads[3], 560, 420));
+  assert(!pixel(t.uploads[2], 560, 420));  // gray ref=10
   lab.croppedUploadValidated = true;
   lab.verticalWindowValidated = false;
   uint32_t before = t.bytes;
@@ -167,10 +176,13 @@ int main() {
   r.bwPreparation = {true, 37, 2, 5};
   const auto uploadStart = rotated.uploads.size();
   assert(r.start(50, true));
-  for (auto byte : rotated.uploads[uploadStart])
-    assert(byte == 255);  // every visible pixel selects black or white drive
-  assert(!pixel(rotated.uploads[uploadStart + 1], 140, 120));
-  assert(pixel(rotated.uploads[uploadStart + 1], 140, 250));
+  assert(rotated.commands[uploadStart] == 0x13 && rotated.commands[uploadStart+1] == 0x10);
+  for (size_t i=0; i<48000; ++i) {
+    assert(rotated.oldRam[i] == uint8_t(~rotated.newRam[i]));
+    assert(rotated.oldRam[i] == rotated.uploads[uploadStart+1][i]);
+  }
+  assert(!pixel(rotated.uploads[uploadStart], 140, 120));
+  assert(pixel(rotated.uploads[uploadStart], 140, 250));
   assert(rotated.banks.back() == x4render::preparation(r.bwPreparation, 0));
   assert(r.preparationLut(3)->at(1) == uint8_t(0x80 | 5));
   assert(r.preparationLut(3)->at(2) == uint8_t(0x40 | 37));
@@ -197,7 +209,7 @@ int main() {
       assert(r.imageSeed() == 0x1234 && rotated.fullBw);
       assert(rotated.uploads.size() == uploads + 2);
       if (image == x4render::TestImage::White || image == x4render::TestImage::Black)
-        for (auto b : rotated.uploads.back())
+        for (auto b : rotated.uploads[uploads])
           assert(b == (image == x4render::TestImage::White ? 255 : 0));
       assert(r.poll(72));
       assert(rotated.banks.size() == banks + 1 && !r.settleLut(0));
@@ -231,6 +243,34 @@ int main() {
   failing.accepted = false;
   assert(f.poll(2));  // settle failure must notify the owner, not silently idle
   assert(f.job() == decltype(f)::Job::Failed && !f.busy());
+  Fake priming;
+  x4render::Calibration<Fake> p(priming);
+  assert(p.allocate());
+  p.bwPreparation.programmable = p.bwPreparation.factoryPrime = true;
+  assert(p.startImage(0, x4render::TestImage::Black));
+  p.poll(1);
+  assert(p.job() == decltype(p)::Job::Prime && priming.otpCalls == 1);
+  p.poll(2);
+  assert(p.job() == decltype(p)::Job::Base && priming.uploads.size() == 4);
+  assert(p.poll(3));
+  assert(p.startImage(4, x4render::TestImage::White));
+  assert(p.poll(5) && priming.otpCalls == 1);  // no repeated warm primer
+  assert(p.powerOff(6) && p.poll(7));
+  assert(p.startImage(8, x4render::TestImage::White)); p.poll(9);
+  assert(p.job() == decltype(p)::Job::Prime && priming.otpCalls == 2);
+  Fake landscape;
+  x4render::Calibration<Fake> photo(landscape);
+  assert(photo.allocate());
+  assert(photo.startImage(0, x4render::TestImage::LandscapeDither));
+  photo.poll(1); assert(photo.poll(2) && landscape.banks.empty());
+  assert(photo.startImage(3, x4render::TestImage::LandscapeGray));
+  photo.poll(4);
+  assert(photo.busy() && photo.driveCount > 100000);
+  assert(!landscape.vertical && landscape.activation.height == 480);
+  assert(photo.poll(5));
+  const auto oldUploads = landscape.uploads.size();
+  assert(photo.start(6, false));
+  assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs
   std::cout << "calibration: endpoint preparation, wire selectors, held "
                "references, repeats, conditioning, timeout passed\n";
 }

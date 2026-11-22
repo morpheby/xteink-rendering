@@ -52,6 +52,40 @@ int main() {
   assert(preparation({true, 0, 1, 16}) == LutBank{});
   assert(preparation({true, 16, 0, 16}) == LutBank{});
   assert(preparation({true, 16, 1, 64}) == LutBank{});
+  BwPreparation c;
+  c.programmable = c.conditioned = true;
+  auto cb = preparation(c);
+  assert(cb[Row[2]][1] == 0x42 && cb[Row[2]][2] == 0x82);
+  assert(cb[Row[2]][8] == 0x94 && cb[Row[2]][9] == 3);
+  assert(cb[Row[2]][15] == 20 && cb[Row[2]][16] == 0x54);
+  assert(cb[Row[3]][15] == 0x54 && cb[Row[3]][16] == 0x94);
+  for (auto row : cb) assert(counts(row) == 74);
+  // No holes/empty leading groups when disabling activation and reference.
+  c.activationFrames = c.referenceFrames = c.restFrames = 0;
+  cb = preparation(c);
+  assert(cb[0][0] == 1 && cb[0][7] == 0);
+  c.whiteFrames = 30;
+  cb = preparation(c);
+  assert(cb[Row[2]][3] == 10 && cb[Row[3]][3] == 0);
+  for (auto row : cb) assert(counts(row) == 53);
+  // Exercise aligned VCOM/source timings at parameter boundaries, asymmetric
+  // endpoints and disabled stages. No row can end before another row.
+  for (uint8_t activation : {uint8_t(0),uint8_t(8)})
+    for (uint8_t cycles : {uint8_t(0),uint8_t(4)})
+      for (uint8_t reference : {uint8_t(0),uint8_t(63)})
+        for (uint8_t frames : {uint8_t(1),uint8_t(63)})
+          for (uint8_t white : {uint8_t(0),uint8_t(1),uint8_t(63)}) {
+            c.activationFrames = activation; c.activationCycles = cycles;
+            c.referenceFrames = reference; c.frames = frames; c.whiteFrames = white;
+            c.restFrames = c.tailFrames = 16;
+            c.repeats = 16; c.inversionFrames = 63;
+            c.vcomRail = 1; c.restRail = 3;
+            const uint32_t target = white > frames ? white : frames;
+            const uint32_t expected = 2*activation*cycles + reference + 16 + (63+target+16)*16;
+            for (auto row : preparation(c)) assert(counts(row) == expected);
+          }
+  c.activationFrames = 9;
+  assert(preparation(c) == LutBank{});
   std::cout << "waveform: opposite-first bytes, binary/hex inspection, aligned "
                "repeats and programmable B/W passed\n";
 }

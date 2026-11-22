@@ -22,7 +22,7 @@ struct Fake {
   Status state = Status::Off;
   Result result = Result::Complete;
   uint32_t bytes = 0;
-  bool otp = false, vertical = false;
+  bool otp = false, vertical = false, fullBw = false, accepted = true;
   Window activation{};
   std::vector<std::vector<uint8_t>> uploads;
   std::vector<x4render::LutBank> banks;
@@ -51,11 +51,14 @@ struct Fake {
     otp = true;
     return true;
   }
-  bool activate(const x4render::LutBank& bank, Window w, bool v, uint32_t) {
+  bool activate(const x4render::LutBank& bank, Window w, bool v, uint32_t,
+                bool bw = false) {
+    if (!accepted) return false;
     assert(w.x == 0 && w.width == 800);
     banks.push_back(bank);
     activation = w;
     vertical = v;
+    fullBw = bw;
     return true;
   }
 };
@@ -114,6 +117,9 @@ int main() {
   lab.croppedUploadValidated = false;
   t.state = Fake::Status::Fault;
   t.result = Fake::Result::Complete;
+  assert(!lab.start(57));  // faults never reset a possibly powered controller
+  assert(lab.powerOff(58));
+  assert(lab.poll(59));
   assert(lab.start(60));
   lab.poll(61);
   lab.poll(62);
@@ -178,6 +184,53 @@ int main() {
   assert(r.factoryPreparation() && !r.preparationLut(0));
   r.poll(61);
   r.poll(62);
+  // Explicit test images stop after the selected B/W operation. No candidate
+  // pass or stale held-reference assumption may follow them.
+  for (bool conditioned : {false, true}) {
+    r.bwPreparation.programmable = true;
+    r.bwPreparation.conditioned = conditioned;
+    for (auto image : {x4render::TestImage::White, x4render::TestImage::Black,
+                       x4render::TestImage::Reference, x4render::TestImage::Random}) {
+      const auto uploads = rotated.uploads.size(), banks = rotated.banks.size();
+      assert(r.startImage(70, image, 0x1234));
+      assert(!r.startImage(71, image, 5));
+      assert(r.imageSeed() == 0x1234 && rotated.fullBw);
+      assert(rotated.uploads.size() == uploads + 2);
+      if (image == x4render::TestImage::White || image == x4render::TestImage::Black)
+        for (auto b : rotated.uploads.back())
+          assert(b == (image == x4render::TestImage::White ? 255 : 0));
+      assert(r.poll(72));
+      assert(rotated.banks.size() == banks + 1 && !r.settleLut(0));
+    }
+  }
+  const auto beforeRebuild = rotated.uploads.size();
+  assert(r.start(80, false));
+  assert(rotated.uploads.size() == beforeRebuild + 2);  // image invalidates refs
+  r.poll(81); r.poll(82);
+  r.bwPreparation.pauseMs = 20;
+  const auto beforePause = rotated.banks.size();
+  assert(r.start(0xFFFFFFF0));
+  assert(!r.poll(0xFFFFFFF5));
+  assert(r.job() == decltype(r)::Job::Pause);
+  assert(!r.poll(5) && rotated.banks.size() == beforePause + 1);
+  assert(!r.poll(9) && rotated.banks.size() == beforePause + 2);
+  assert(r.poll(10));
+  x4render::Buffer imageA, imageB, imageC;
+  assert(imageA.allocate(x4render::PlaneBytes));
+  assert(imageB.allocate(x4render::PlaneBytes));
+  assert(imageC.allocate(x4render::PlaneBytes));
+  x4render::paintTestImage(imageA, x4render::TestImage::Random, 123);
+  x4render::paintTestImage(imageB, x4render::TestImage::Random, 123);
+  x4render::paintTestImage(imageC, x4render::TestImage::Random, 124);
+  assert(std::equal(imageA.data(), imageA.data()+imageA.size(), imageB.data()));
+  assert(!std::equal(imageA.data(), imageA.data()+imageA.size(), imageC.data()));
+  Fake failing;
+  x4render::Calibration<Fake> f(failing);
+  assert(f.allocate() && f.start(0));
+  f.poll(1);  // OTP base has started
+  failing.accepted = false;
+  assert(f.poll(2));  // settle failure must notify the owner, not silently idle
+  assert(f.job() == decltype(f)::Job::Failed && !f.busy());
   std::cout << "calibration: endpoint preparation, wire selectors, held "
                "references, repeats, conditioning, timeout passed\n";
 }

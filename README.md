@@ -86,8 +86,44 @@ brightening code 2 → darkening code 1 → hold; requested white uses code 1 �
 phase but does not claim a reconstruction of all factory OTP behavior.
 
 `BwPreparation::inversionFrames` independently controls 0–63 complement counts
-(default 16; zero deliberately disables it for comparison). `frames` remains the
+(default 20; zero deliberately disables it for comparison). `frames` remains the
 existing 1–63 target count. `repeats` repeats the entire complement/target/hold
 cycle. All five LUT rows have `(inversionFrames + frames + 1) * repeats` modeled
 counts. Raw binary/hex inspection includes every phase. Long settings remain
 subject to the transport's bounded BUSY deadline and physical validation.
+
+## Conditioned B/W and explicit starting images
+
+Factory OTP, the original simple programmable recipe, and the new conditioned
+recipe remain separately selectable. The conditioned default is two activation
+pairs (code 1 for 2 counts, code 2 for 2 counts), a common white-reference drive
+of 20 counts, 3 rest-code counts, target-dependent inversion/writing at 20/20,
+and 3 ending rest-code counts. All phases live inside one LUT activation.
+
+After a white reference, black-target pixels already have their inverted
+endpoint: the first inversion interval holds them instead of adding another
+20-count white drive. White-target pixels receive the darkening inversion.
+Subsequent cycles use a genuine inversion for both targets. This avoids treating
+the common reference and the black-target inverse as one long white overdrive.
+With the reference disabled, both targets receive the ordinary inversion.
+
+Activation width/cycles, reference, rest, tail, white-target override, rest-source
+code, VCOM code and an optional host pause are independently adjustable. Zero
+white override follows the ordinary B/W target length; asymmetric endpoints are
+padded to equal total duration. Disabled stages are compacted without empty
+leading groups. Rest/source and VCOM codes remain electrically unverified; these
+are not labeled zero-voltage discharge. The optional host pause follows BUSY
+completion, outside the LUT, and applies to OTP and programmable preparation.
+
+`startImage()` renders pure white, pure black, original reference artwork or a
+seeded random edge pattern. It runs the selected B/W preparation without gray
+settling, invalidates calibration references, and rejects overlapping operations.
+The random scene uses chunky blocks plus a house silhouette; identical seeds
+produce identical packed pixels. The ESPHome integration can repeat the exact
+last image/seed under a different B/W profile for A/B comparison. No image is
+driven automatically at boot or when a tuning control changes.
+
+Faults no longer trigger an automatic hardware reset. Power-off must complete
+before ownership can return to the ordinary driver; a failed shutdown retains
+the lease. The consumer supplies a monotonic clock to transport diagnostics so
+command timestamps are sampled after uploads rather than using stale call times.

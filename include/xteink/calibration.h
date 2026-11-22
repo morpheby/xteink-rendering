@@ -2,6 +2,7 @@
 #include "rendering.h"
 #include "waveform.h"
 #include "waveform_inspection.h"
+#include "test_image.h"
 
 namespace x4render {
 // Display-independent diagnostic layout. All drawing is into two reusable
@@ -13,6 +14,7 @@ class Calibration {
     Idle,
     PowerOn,
     Base,
+    Pause,
     Settle,
     Conditioning,
     PowerOff,
@@ -35,11 +37,27 @@ class Calibration {
       verbose{false};
   bool start(uint32_t now, bool prepare = true, bool rotate = false,
              bool conditioning = false) {
+    return startOperation(now, prepare, rotate, conditioning,
+                          TestImage::Calibration, 0);
+  }
+  bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
+    if (image < TestImage::White || image > TestImage::Random) return false;
+    return startOperation(now, true, false, false, image, seed);
+  }
+  TestImage image() const { return image_; }
+  uint32_t imageSeed() const { return seed_; }
+
+ private:
+  bool startOperation(uint32_t now, bool prepare, bool rotate, bool conditioning,
+                      TestImage image, uint32_t seed) {
     if (busy() || !first_.data() || !bwPreparation.valid() || holdRail > 3)
       return false;
     for (auto p : parameters)
       if (!p.valid() || p.repeats != parameters[0].repeats) return false;
     conditioning_ = conditioning;
+    image_ = image;
+    seed_ = seed;
+    pauseMs_ = bwPreparation.pauseMs;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
     started_ = now;
@@ -48,9 +66,9 @@ class Calibration {
     result_ = "running";
     if (transport_.status() == Transport::Status::Fault ||
         transport_.status() == Transport::Status::Sleeping) {
-      transport_.reset();
-      references_ = false;
-      if (!conditioning) prepare_ = true;
+      // Fault recovery must establish power-off first. Resetting a possibly
+      // powered controller hides the ownership error and can interrupt HV.
+      return fail();
     }
     // One owner for rotation: explicit or implicit rebuild resets it. A
     // rejected/overlapping request never advances it.
@@ -63,8 +81,14 @@ class Calibration {
     }
     return beginPass(now);
   }
+
+ public:
   bool poll(uint32_t now) {
     if (!busy()) return false;
+    if (job_ == Job::Pause) {
+      if (uint32_t(now - baseCompleted_) >= pauseMs_) beginSettle(now);
+      return job_ == Job::Failed;
+    }
     const auto r = transport_.poll(now);
     if (r == Transport::Result::Pending) return false;
     if (r != Transport::Result::Complete) {
@@ -84,24 +108,31 @@ class Calibration {
       return true;
     }
     if (job_ == Job::PowerOn) {
-      beginPass(now);
-      return false;
+      return !beginPass(now);
     }
     if (job_ == Job::Base) {
       prepare_ = false;
-      beginSettle(now);
-      return false;
+      if (image_ != TestImage::Calibration) return complete(now, false);
+      if (pauseMs_) {
+        baseCompleted_ = now;
+        job_ = Job::Pause;
+        return false;
+      }
+      return !beginSettle(now);
     }
+    return complete(now, !conditioning_);
+  }
+  bool complete(uint32_t now, bool references) {
     duration = now - started_;
     cycles++;
-    references_ = !conditioning_;
+    references_ = references;
     job_ = Job::Idle;
     result_ = "complete";
     uploaded_ = transport_.uploadedBytes() - bytesAtStart_;
     return true;
   }
   bool powerOff(uint32_t now) {
-    if (busy() || transport_.status() != Transport::Status::Ready) return false;
+    if (busy()) return false;
     started_ = now;
     bytesAtStart_ = transport_.uploadedBytes();
     uploaded_ = 0;
@@ -115,6 +146,7 @@ class Calibration {
     references_ = false;
     job_ = Job::Idle;
     rotation_ = 0;
+    settleValid_ = preparationValid_ = factoryPreparation_ = false;
   }
   uint8_t rotation() const { return rotation_; }
   uint8_t programmedRotation() const { return programmedRotation_; }
@@ -246,6 +278,16 @@ class Calibration {
     references_ = false;
     first_.clear(255);
     second_.clear(255);
+    if (image_ != TestImage::Calibration) {
+      paintTestImage(second_, image_, seed_);
+      if (image_ == TestImage::Reference || image_ == TestImage::Random) {
+        text(20, 12, image_ == TestImage::Reference ? "X4 KNOWN REFERENCE"
+                                                 : "X4 RANDOM EDGES", 3);
+        char label[40];
+        std::snprintf(label, sizeof(label), "SEED %08lX", (unsigned long)seed_);
+        text(20, 452, label, 2);
+      }
+    } else {
     text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
     text(18, 43, "OPPOSITE FIRST - THEN A B C");
     if (bwPreparation.programmable) {
@@ -255,6 +297,7 @@ class Calibration {
       number(43, 82, bwPreparation.inversionFrames);
       text(88, 65, "R", 1);
       number(99, 62, bwPreparation.repeats);
+      if (bwPreparation.conditioned) text(150, 65, "COND", 1);
     } else
       text(18, 65, "BW OTP", 1);
     for (uint8_t c = 0; c < 3; ++c) {
@@ -296,11 +339,12 @@ class Calibration {
     text(220, 432, "WHITE");
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
+    }
     if (!upload({0, 0, 800, 480})) return fail();
     bool activated;
     if (bwPreparation.programmable) {
       const auto bank = preparation(bwPreparation, holdRail);
-      activated = transport_.activate(bank, {0, 0, 800, 480}, false, now);
+      activated = transport_.activate(bank, {0, 0, 800, 480}, false, now, true);
       if (activated) {
         preparationBank_ = bank;
         preparationValid_ = true;
@@ -314,6 +358,11 @@ class Calibration {
       }
     }
     if (!activated) return fail();
+    requested = expanded = lastActivation_ = {0, 0, 800, 480};
+    driveCount = 384000;
+    programmedHoldRail_ = bwPreparation.programmable && bwPreparation.conditioned
+                              ? bwPreparation.restRail : holdRail;
+    settleValid_ = false;
     job_ = Job::Base;
     return true;
   }
@@ -380,6 +429,9 @@ class Calibration {
   Buffer first_, second_;
   Job job_{Job::Idle};
   bool references_{false}, prepare_{true}, conditioning_{false};
+  TestImage image_{TestImage::Calibration};
+  uint32_t seed_{0}, baseCompleted_{0};
+  uint16_t pauseMs_{0};
   uint8_t rotation_{0};
   uint32_t started_{0}, bytesAtStart_{0}, uploaded_{0};
   const char* result_{"idle"};

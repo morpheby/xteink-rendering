@@ -41,6 +41,9 @@ constexpr Lut held(uint16_t duration, uint8_t repeats, uint8_t rail = 0) {
 }
 // Direct wire selectors, no inversion: 00->R24, 01->R22, 10->R23, 11->R21.
 constexpr uint8_t Row[4] = {4, 2, 3, 1};
+constexpr uint8_t phaseCode(uint8_t rail, uint8_t frames) {
+  return frames ? uint8_t((rail << 6) | frames) : 0;
+}
 constexpr LutBank candidates(std::array<Pulse, 3> p, uint8_t holdRail = 0) {
   LutBank out{};
   uint16_t longest = 1;
@@ -67,15 +70,74 @@ constexpr LutBank candidates(std::array<Pulse, 3> p, uint8_t holdRail = 0) {
 }
 struct BwPreparation {
   bool programmable{false};
-  uint8_t frames{16}, repeats{1}, inversionFrames{16};
+  uint8_t frames{20}, repeats{1}, inversionFrames{20};
+  bool conditioned{false};
+  uint8_t activationFrames{2}, activationCycles{2}, referenceFrames{20},
+      restFrames{3}, tailFrames{3}, whiteFrames{0}, restRail{0}, vcomRail{0};
+  uint16_t pauseMs{0};
   constexpr bool valid() const {
     return frames >= 1 && frames <= 63 && repeats >= 1 && repeats <= 16 &&
-           inversionFrames <= 63;
+           inversionFrames <= 63 && activationFrames <= 8 &&
+           activationCycles <= 4 && referenceFrames <= 63 && restFrames <= 16 &&
+           tailFrames <= 16 && whiteFrames <= 63 && restRail <= 3 &&
+           vcomRail <= 3 && pauseMs <= 1000;
   }
 };
 constexpr LutBank preparation(BwPreparation p, uint8_t holdRail = 0) {
   if (!p.valid() || holdRail > 3) return {};
   LutBank bank{};
+  if (p.conditioned) {
+    // Codes are experimental actions, NOT certified physical voltages.
+    // All five rows have exactly aligned group/state durations. Preparation
+    // drives every visible pixel; no previous-image RAM assumptions are used.
+    const uint8_t white = p.whiteFrames ? p.whiteFrames : p.frames;
+    const uint8_t longest = white > p.frames ? white : p.frames;
+    for (uint8_t row = 0; row < 5; ++row) {
+      auto& lut = bank[row];
+      const uint8_t rest = row ? p.restRail : p.vcomRail;
+      uint8_t base = 0;
+      if (p.activationFrames && p.activationCycles) {
+        lut[0] = p.activationCycles;
+        lut[1] = uint8_t(((row ? 1 : p.vcomRail) << 6) | p.activationFrames);
+        lut[2] = uint8_t(((row ? 2 : p.vcomRail) << 6) | p.activationFrames);
+        lut[5] = lut[6] = 1;
+        base += 7;
+      }
+      // A common white reference precedes target-dependent inversion/writing.
+      if (p.referenceFrames || p.restFrames) {
+        lut[base] = 1;
+        lut[base + 1] = phaseCode(row ? 2 : p.vcomRail, p.referenceFrames);
+        lut[base + 2] = phaseCode(rest, p.restFrames);
+        lut[base + 5] = lut[base + 6] = 1;
+        base += 7;
+      }
+      // The inversion/write pair alone is repeated, like the simple profile.
+      lut[base] = p.referenceFrames ? 1 : p.repeats;
+      const bool black = row == Row[2];
+      const bool target = black || row == Row[3];
+      const uint8_t rail = target ? (black ? 1 : 2) : rest;
+      const uint8_t length = target ? (black ? p.frames : white) : longest;
+      // After a white reference, black-target pixels are ALREADY at their
+      // inverted endpoint. Hold them instead of another full white drive.
+      // Without the reference, both targets need the full inversion pulse.
+      const uint8_t inverse = black && p.referenceFrames ? rest :
+                                  (target ? uint8_t(3 - rail) : rest);
+      lut[base + 1] = phaseCode(inverse, p.inversionFrames);
+      lut[base + 2] = phaseCode(rail, length);
+      lut[base + 3] = phaseCode(rest, longest - length);
+      lut[base + 4] = phaseCode(rest, p.tailFrames);
+      lut[base + 5] = lut[base + 6] = 1;
+      if (p.referenceFrames && p.repeats > 1) {
+        // Later cycles begin at the requested image, so they need genuine
+        // inversion for BOTH endpoints. Keep this group aligned in all rows.
+        for (uint8_t i = 0; i < 7; ++i) lut[base + 7 + i] = lut[base + i];
+        lut[base + 7] = p.repeats - 1;
+        lut[base + 8] = phaseCode(target ? uint8_t(3 - rail) : rest,
+                                  p.inversionFrames);
+      }
+    }
+    return bank;
+  }
   // B/W screen uses DTM1=1 and DTM2=image: black=10, white=11.
   // Drive every pixel toward the COMPLEMENT of its requested B/W value,
   // then drive the requested endpoint, then hold. This is an experimental

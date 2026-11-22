@@ -72,7 +72,7 @@ struct BwPreparation {
   bool programmable{false};
   uint8_t frames{20}, repeats{1}, inversionFrames{20};
   bool conditioned{false};
-  uint8_t activationFrames{2}, activationCycles{2}, referenceFrames{20},
+  uint8_t activationFrames{2}, activationCycles{2}, referenceFrames{0},
       restFrames{3}, tailFrames{3}, whiteFrames{0}, restRail{0}, vcomRail{0};
   uint16_t pauseMs{0};
   constexpr bool valid() const {

@@ -96,11 +96,13 @@ subject to the transport's bounded BUSY deadline and physical validation.
 
 Factory OTP, the original simple programmable recipe, and the new conditioned
 recipe remain separately selectable. The conditioned default is two activation
-pairs (code 1 for 2 counts, code 2 for 2 counts), a common white-reference drive
-of 20 counts, 3 rest-code counts, target-dependent inversion/writing at 20/20,
-and 3 ending rest-code counts. All phases live inside one LUT activation.
+pairs (code 1 for 2 counts, code 2 for 2 counts), 3 rest-code counts,
+target-dependent inversion/writing at 20/20, and 3 ending rest-code counts.
+All phases live inside one LUT activation. An optional common white reference
+defaults off: it adds an asymmetric source-code dose. Equal opposite-code counts
+in the default are not a certification of actual electrical DC balance.
 
-After a white reference, black-target pixels already have their inverted
+When the white reference is enabled, black-target pixels already have their inverted
 endpoint: the first inversion interval holds them instead of adding another
 20-count white drive. White-target pixels receive the darkening inversion.
 Subsequent cycles use a genuine inversion for both targets. This avoids treating

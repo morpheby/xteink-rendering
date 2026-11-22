@@ -56,10 +56,31 @@ int main() {
   c.programmable = c.conditioned = true;
   auto cb = preparation(c);
   assert(cb[Row[2]][1] == 0x42 && cb[Row[2]][2] == 0x82);
-  assert(cb[Row[2]][8] == 0x94 && cb[Row[2]][9] == 3);
-  assert(cb[Row[2]][15] == 20 && cb[Row[2]][16] == 0x54);
+  assert(cb[Row[2]][8] == 0 && cb[Row[2]][9] == 3);
+  assert(cb[Row[2]][15] == 0x94 && cb[Row[2]][16] == 0x54);
   assert(cb[Row[3]][15] == 0x54 && cb[Row[3]][16] == 0x94);
+  for (auto row : cb) {
+    assert(counts(row) == 54);
+    int balance = 0;
+    for (size_t g=0; g<49; g+=7)
+      for (size_t phase=1; phase<=4; ++phase) {
+        const auto value=row[g+phase];
+        const int action=value>>6;
+        const int sign=action==1 ? 1 : action==2 ? -1 : 0;
+        balance += sign*(value&63)*row[g]*row[g+(phase<=2 ? 5 : 6)];
+      }
+    assert(balance == 0);  // modeled source-code counts, NOT measured DC charge
+  }
+  c.referenceFrames = 20;
+  cb = preparation(c);
+  assert(cb[Row[2]][15] == 20 && cb[Row[2]][8] == 0x94);
   for (auto row : cb) assert(counts(row) == 74);
+  c.repeats = 2;
+  cb = preparation(c);
+  assert(cb[Row[2]][14] == 1 && cb[Row[2]][21] == 1);
+  assert(cb[Row[2]][22] == 0x94);  // real inversion returns on later cycles
+  for (auto row : cb) assert(counts(row) == 117);
+  c.repeats = 1;
   // No holes/empty leading groups when disabling activation and reference.
   c.activationFrames = c.referenceFrames = c.restFrames = 0;
   cb = preparation(c);

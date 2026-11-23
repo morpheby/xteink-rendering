@@ -28,7 +28,8 @@ constexpr uint16_t bwRecovery(uint16_t previous, unsigned switches) {
   return uint16_t((235u * previous >> 8) + 21u * switches);
 }
 template <class Read>
-BwLoad measureRailLoad(Read read, uint16_t left, uint16_t right, const BwColumnMask* lanes) {
+BwLoad measureRailLoad(Read read, uint16_t left, uint16_t right, const BwColumnMask* lanes,
+                       uint16_t top = 0, uint16_t bottom = Height) {
   constexpr size_t stride = Width / 8;
   if (left >= right || right > Width || (left & 7) || (right & 7)) return {};
   const size_t start = left / 8, stop = right / 8;
@@ -41,7 +42,8 @@ BwLoad measureRailLoad(Read read, uint16_t left, uint16_t right, const BwColumnM
     load.firstWhite += bwPopcount(read(x)[0]);
     load.lastWhite += bwPopcount(read((Height - 1) * stride + x)[0]);
   }
-  for (size_t y = 1; y < Height; ++y) {
+  // Include the transitions from and to hold on either side of the area.
+  for (size_t y = std::max<uint16_t>(1, top); y < Height && y <= bottom; ++y) {
     std::array<std::array<uint8_t, stride>, 2> directed;
     unsigned total[2]{};
     for (size_t x = start; x < stop; ++x) {

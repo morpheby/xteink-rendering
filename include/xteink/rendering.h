@@ -307,32 +307,15 @@ class Frames {
         }
     }
     if (settings.mode == Mode::DitherSettle && !resync && !requested.empty()) {
-      // Fixed-point closure on the union of OLD and NEW gray connectivity.
-      // A bounded scan avoids a full-screen queue or queue overflow fallback.
-      bool grew;
-      do {
-        grew = false;
-        for (uint16_t y = 0; y < Height; ++y)
-          for (uint16_t x = 0; x < Width; ++x) {
-            size_t i = size_t(y) * Width + x;
-            if (packedBit(mask, i)) continue;
-            const auto old = previousMix[displayed[i]].sample(x, y, previous.columnDither),
-                       next = currentMix[target[i]].sample(x, y, current.columnDither);
-            if (!old.selector && !next.selector) continue;
-            if ((x && packedBit(mask, i - 1)) ||
-                (x + 1 < Width && packedBit(mask, i + 1)) ||
-                (y && packedBit(mask, i - Width)) ||
-                (y + 1 < Height && packedBit(mask, i + Width)) ||
-                (x && y && packedBit(mask, i - Width - 1)) ||
-                (x + 1 < Width && y && packedBit(mask, i - Width + 1)) ||
-                (x && y + 1 < Height && packedBit(mask, i + Width - 1)) ||
-                (x + 1 < Width && y + 1 < Height &&
-                 packedBit(mask, i + Width + 1))) {
-              packedBit(mask, i, true);
-              grew = true;
-            }
-          }
-      } while (grew);
+      dtm1.clear();
+      for (uint16_t y = 0; y < Height; ++y)
+        for (uint16_t x = 0; x < Width; ++x) {
+          const size_t i = size_t(y) * Width + x;
+          const auto old = previousMix[displayed[i]].sample(x, y, previous.columnDither);
+          const auto next = currentMix[target[i]].sample(x, y, current.columnDither);
+          if (old.selector || next.selector) packedBit(dtm1, i, true);
+        }
+      extendConnectedGray();
     }
     for (uint16_t y = 0; y < Height; ++y)
       for (uint16_t x = 0; x < Width; ++x)
@@ -419,6 +402,61 @@ class Frames {
   uint32_t driven{0};
 
  private:
+  // Use the eligibility plane as scratch and revisit only rows reached by
+  // the flood. Horizontal runs close in two scans, including leftward growth.
+  void extendConnectedGray() {
+    std::array<uint16_t, Height> rows;
+    std::array<bool, Height> queued{};
+    size_t read = 0, write = 0, count = 0;
+    auto enqueue = [&](uint16_t y) {
+      if (queued[y]) return;
+      rows[write] = y;
+      write = (write + 1) % rows.size();
+      ++count;
+      queued[y] = true;
+    };
+    for (uint16_t y = 0; y < Height; ++y) {
+      const auto* row = mask.data() + size_t(y) * (Width / 8);
+      if (std::any_of(row, row + Width / 8, [](uint8_t v) { return v != 0; })) enqueue(y);
+    }
+    while (count) {
+      const uint16_t y = rows[read];
+      read = (read + 1) % rows.size();
+      --count;
+      queued[y] = false;
+      const size_t base = size_t(y) * Width;
+      auto extend = [&](bool reverse) {
+        bool active = false;
+        for (uint16_t column = 0; column < Width; ++column) {
+          const size_t i = base + (reverse ? Width - 1 - column : column);
+          if (packedBit(mask, i)) {
+            active = true;
+          } else if (active && packedBit(dtm1, i)) {
+            packedBit(mask, i, true);
+          } else {
+            active = false;
+          }
+        }
+      };
+      extend(false);
+      extend(true);
+      for (const int neighbor : {int(y) - 1, int(y) + 1}) {
+        if (neighbor < 0 || neighbor >= Height) continue;
+        const size_t adjacent = size_t(neighbor) * Width;
+        bool grew = false;
+        for (uint16_t x = 0; x < Width; ++x) {
+          if (!packedBit(dtm1, adjacent + x) || packedBit(mask, adjacent + x)) continue;
+          if (packedBit(mask, base + x) ||
+              (x && packedBit(mask, base + x - 1)) ||
+              (x + 1 < Width && packedBit(mask, base + x + 1))) {
+            packedBit(mask, adjacent + x, true);
+            grew = true;
+          }
+        }
+        if (grew) enqueue(neighbor);
+      }
+    }
+  }
   void clearPreview() {
     if (hasPreview_) previewMask_.clear();
     hasPreview_ = false;

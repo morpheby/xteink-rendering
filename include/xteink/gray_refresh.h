@@ -34,8 +34,12 @@ inline uint32_t encodeGrayPass(Frames& frames, bool settle, const BwZonePlan& zo
 }
 
 inline BwZonePlan grayPassZones(Frames& frames, bool settle, unsigned railBudget, unsigned localBudget) {
+  const auto& bounds = frames.expanded;
+  const uint16_t left = bounds.x & ~7, right = (bounds.x + bounds.width + 7) & ~7;
   return planBwZones([&](BwZonePlan& plan, const BwColumnMask* active) {
-    auto measure = [&](auto read) { plan.include(measureRailLoad(read, 0, Width, active)); };
+    auto measure = [&](auto read) {
+      plan.include(measureRailLoad(read, left, right, active, bounds.y, bounds.y + bounds.height));
+    };
     const auto& first = frames.dtm1;
     const auto& second = frames.dtm2;
     if (!settle) {

@@ -317,6 +317,41 @@ int main() {
       assert(landscape.uploads[start + 1][i] == uint8_t(~target));
     }
   }
+  // The load controls must use the same B/W recipe and destination density.
+  // Only the phase of the second and subsequent alternating rows differs.
+  photo.bwPreparation.programmable = true;
+  const auto loadBankStart = landscape.banks.size();
+  const auto loadPlaneStart = landscape.uploads.size();
+  for (auto image : {x4render::TestImage::LoadStripes, x4render::TestImage::LoadCheckerboard}) {
+    const auto uploads = landscape.uploads.size();
+    assert(photo.startImage(9, image) && photo.poll(10));
+    assert(landscape.uploads.size() == uploads + 2 && landscape.fullBw && !photo.settleLut(0));
+    const auto& target = landscape.uploads[uploads];
+    for (int y = 0; y < x4render::Height; ++y) {
+      const bool flipped = image == x4render::TestImage::LoadCheckerboard && (y & 1);
+      unsigned white = 0;
+      for (int x = 0; x < x4render::Width; ++x) {
+        const bool bit = pixel(target, x, y);
+        assert(bit == ((x % 2 == 0) != flipped));
+        white += bit;
+        if (y) assert((bit != pixel(target, x, y - 1)) ==
+                      (image == x4render::TestImage::LoadCheckerboard));
+      }
+      assert(white == x4render::Width / 2);
+    }
+  }
+  assert(landscape.banks.size() == loadBankStart + 2 &&
+         landscape.banks[loadBankStart] == landscape.banks[loadBankStart + 1]);
+  photo.bwPreparation.programmable = false;
+  const auto otpCount = landscape.otpCalls;
+  const auto otpPlaneStart = landscape.uploads.size();
+  for (auto image : {x4render::TestImage::LoadStripes, x4render::TestImage::LoadCheckerboard}) {
+    assert(photo.startImage(11, image) && photo.poll(12));
+    assert(photo.factoryPreparation() && !photo.settleLut(0));
+  }
+  assert(landscape.otpCalls == otpCount + 2 && landscape.uploads.size() == otpPlaneStart + 4);
+  for (size_t i = 0; i < 4; ++i)
+    assert(landscape.uploads[loadPlaneStart + i] == landscape.uploads[otpPlaneStart + i]);
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

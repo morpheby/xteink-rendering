@@ -46,7 +46,7 @@ class Calibration {
                           TestImage::Calibration, 0);
   }
   bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
-    if (image < TestImage::White || image > TestImage::RampInverse) return false;
+    if (image < TestImage::White || image > TestImage::LoadCheckerboard) return false;
     return startOperation(now, true, false, false, image, seed);
   }
   TestImage image() const { return image_; }

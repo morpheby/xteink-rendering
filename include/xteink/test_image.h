@@ -4,7 +4,8 @@
 
 namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
-                                LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp, RampBase, RampInverse };
+                                LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp,
+                                RampBase, RampInverse, LoadStripes, LoadCheckerboard };
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
@@ -20,6 +21,16 @@ constexpr bool usesRelativeGray(TestImage image) {
 }
 
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
+  if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard) {
+    // Same rail split and along-row alternation in both tests. Only the
+    // checkerboard changes the source-line polarity at each visible row.
+    const bool flipRows = image == TestImage::LoadCheckerboard;
+    for (uint16_t y = 0; y < Height; ++y)
+      std::memset(plane.data() + size_t(y) * (Width / 8),
+                  flipRows && (y & 1) ? 0x55 : 0xAA, Width / 8);
+    return;
+  }
+
   plane.clear(image == TestImage::Black ? 0 : 255);
   if (image == TestImage::White || image == TestImage::Black ||
       image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||

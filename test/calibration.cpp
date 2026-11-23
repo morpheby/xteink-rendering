@@ -77,6 +77,13 @@ bool pixel(const std::vector<uint8_t>& p, int x, int y) {
   return p[i / 8] & (0x80u >> (i % 8));
 }
 int main() {
+  std::array<float, 17> swatchLuma{};
+  for (size_t step = 0; step < swatchLuma.size(); ++step) swatchLuma[step] = 57.0f + float(step) * 2.0f;
+  std::swap(swatchLuma[7], swatchLuma[8]);
+  const auto fitted = x4render::fitCoverage(swatchLuma);
+  assert(fitted && fitted->front() == 0 && fitted->back() == 255);
+  assert((*fitted)[7] == (*fitted)[8]);
+  assert(!x4render::fitCoverage({}));
   const std::array<x4render::CoverageCurve, 7> linear{};
   const auto measured = x4render::measuredRelativePalette({{35, 108, 187, 206, 0, 0}}, linear);
   assert(measured.calibrated && measured.count == 6);

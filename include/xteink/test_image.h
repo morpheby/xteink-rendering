@@ -1,5 +1,5 @@
 #pragma once
-#include "rendering.h"
+#include "gray_profile.h"
 #include "landscape.h"
 
 namespace x4render {
@@ -234,13 +234,6 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
   rect(10, 50, 3, 388, false);
   rect(787, 50, 3, 388, false);
 }
-// IDs 1..3 are A/B/C from black. IDs 4..6 are A/B/C from white.
-constexpr Shade relativeShade(uint8_t id, uint8_t luma) {
-  return {luma, uint8_t(id >= 4), uint8_t(id == 0 || id == 7 ? 0 : 1 + (id - 1) % 3)};
-}
-constexpr uint8_t relativeShadeId(Shade shade) {
-  return shade.selector ? uint8_t(shade.selector + 3 * shade.base) : uint8_t(shade.base ? 7 : 0);
-}
 constexpr uint8_t NeighborTop = 78;
 constexpr uint8_t NeighborRowHeight = 56;
 constexpr uint8_t NeighborSwatchHeight = 43;
@@ -263,24 +256,6 @@ inline Palette provisionalRelativePalette() {
   palette.count = 8;
   for (uint8_t i = 0; i < 8; ++i)
     palette.shades[i] = relativeShade(i, uint8_t(unsigned(i) * 255 / 7));
-  return palette;
-}
-
-inline Palette measuredRelativePalette(const std::array<uint8_t, 6>& luminance,
-                                       const std::array<CoverageCurve, 7>& coverage) {
-  std::array<uint8_t, 6> order{{1, 2, 3, 4, 5, 6}};
-  std::sort(order.begin(), order.end(), [&](uint8_t a, uint8_t b) {
-    return luminance[a - 1] < luminance[b - 1];
-  });
-  Palette palette;
-  palette.count = 1;
-  for (const auto id : order) {
-    const auto luma = luminance[id - 1];
-    if (luma) palette.shades[palette.count++] = relativeShade(id, luma);
-  }
-  palette.shades[palette.count++] = relativeShade(7, 255);
-  palette.coverage = coverage;
-  palette.calibrated = palette.count > 2 && palette.valid();
   return palette;
 }
 

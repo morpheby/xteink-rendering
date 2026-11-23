@@ -711,6 +711,33 @@ int main() {
       for (int delta : row) assert(!delta);
   }
 
+  for (const auto mode : {x4render::ZoneFinish::Wait, x4render::ZoneFinish::Hold}) {
+    texture.zoneFinish = mode;
+    const auto uploads = textureTransport.uploads.size();
+    const auto banks = textureTransport.banks.size();
+    const auto cycles = texture.cycles;
+    assert(texture.startImage(70, x4render::TestImage::LinearRamp));
+    assert(texture.zonePlan().count == 2);
+    assert(!texture.poll(80) && !texture.poll(90));
+    assert(texture.appliedZoneFinish() == mode && texture.cycles == cycles);
+    const bool hold = mode == x4render::ZoneFinish::Hold;
+    const auto settle = uploads + (hold ? 6 : 4);
+    assert(textureTransport.uploads.size() == settle);
+    if (hold) {
+      assert(texture.job() == decltype(texture)::Job::ZoneHold);
+      assert(textureTransport.banks[banks+2] == textureTransport.banks[banks+1]);
+      for (size_t i = uploads + 4; i < settle; ++i) {
+        const auto& wire = textureTransport.uploads[i];
+        assert(std::all_of(wire.begin(), wire.end(), [](uint8_t byte) { return byte == 0; }));
+      }
+    } else {
+      assert(texture.job() == decltype(texture)::Job::ZoneWait);
+      assert(!texture.poll(99) && textureTransport.uploads.size() == settle);
+    }
+    assert(!texture.poll(100) && textureTransport.uploads.size() == settle + 2);
+    assert(texture.poll(110) && texture.cycles == cycles + 1);
+  }
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

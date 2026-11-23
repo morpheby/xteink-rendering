@@ -11,6 +11,7 @@
 
 namespace x4render {
 enum class GrayDither : uint8_t { Bayer, Columns, Repair };
+enum class ZoneFinish : uint8_t { Off, Wait, Hold };
 
 // Display-independent diagnostic layout. All drawing is into two reusable
 // packed WIRE planes; nothing may mutate them while the transport is busy.
@@ -22,6 +23,8 @@ class Calibration {
     PowerOn,
     Prime,
     Base,
+    ZoneWait,
+    ZoneHold,
     Pause,
     Settle,
     Conditioning,
@@ -52,6 +55,7 @@ class Calibration {
   uint8_t columnGrain{0}, burstHeadroom{0};
   bool bwSplitGuard{true};
   GrayDither grayDither{GrayDither::Bayer};
+  ZoneFinish zoneFinish{ZoneFinish::Off};
   bool grayZoneGuard{false};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
@@ -88,6 +92,7 @@ class Calibration {
   uint8_t stripCount() const { return stripPlan_.count; }
   bool zoneRequested() const { return zoneRequested_; }
   const BwZonePlan& zonePlan() const { return zonePlan_; }
+  ZoneFinish appliedZoneFinish() const { return appliedZoneFinish_; }
   BwLoad requestedBwLoad() const { return requestedBwLoad_; }
   BwLoad renderedBwLoad() const { return renderedBwLoad_; }
   BwSourceCharge bwCharge() const { return bwCharge_; }
@@ -107,6 +112,7 @@ class Calibration {
     imageArgument_ = argument;
     stripPlan_.count = nextStrip_ = 0;
     zonePlan_ = {};
+    appliedZoneFinish_ = ZoneFinish::Off;
     zoneRequested_ = false;
     protectedFallback_ = false;
     repairedGray_ = false;
@@ -141,6 +147,10 @@ class Calibration {
  public:
   bool poll(uint32_t now) {
     if (!busy()) return false;
+    if (job_ == Job::ZoneWait) {
+      if (now - baseCompleted_ < zoneWaitMs_) return false;
+      return finishBase(now);
+    }
     if (job_ == Job::Pause) {
       if (uint32_t(now - baseCompleted_) >= pauseMs_) beginSettle(now);
       return job_ == Job::Failed;
@@ -176,17 +186,11 @@ class Calibration {
     if (job_ == Job::Base) {
       if (nextStrip_ < maskedPassCount())
         return !beginSplitStrip(now);
-      if (factoryPreparation_) otpPrimed_ = true;
-      prepare_ = false;
-      if (image_ != TestImage::Calibration && !usesRelativeGray(image_))
-        return complete(now, false);
-      if (pauseMs_) {
-        baseCompleted_ = now;
-        job_ = Job::Pause;
-        return false;
-      }
-      return !beginSettle(now);
+      if (maskedPassCount() > 1 && zoneFinish != ZoneFinish::Off)
+        return !beginZoneFinish(now);
+      return finishBase(now);
     }
+    if (job_ == Job::ZoneHold) return finishBase(now);
     return complete(now, !conditioning_ && image_ == TestImage::Calibration);
   }
   bool complete(uint32_t now, bool references) {
@@ -638,6 +642,34 @@ class Calibration {
   uint8_t maskedPassCount() const {
     return zonePlan_.count > 1 ? zonePlan_.count : stripPlan_.count;
   }
+  bool finishBase(uint32_t now) {
+    if (factoryPreparation_) otpPrimed_ = true;
+    prepare_ = false;
+    if (image_ != TestImage::Calibration && !usesRelativeGray(image_))
+      return complete(now, false);
+    if (!pauseMs_) return !beginSettle(now);
+    baseCompleted_ = now;
+    job_ = Job::Pause;
+    return false;
+  }
+  bool beginZoneFinish(uint32_t now) {
+    if (zoneFinish == ZoneFinish::Wait) {
+      zoneWaitMs_ = now - maskedStarted_;
+      baseCompleted_ = now;
+      job_ = Job::ZoneWait;
+    } else {
+      // Both planes select the same VCOM-aligned hold row used outside the
+      // zones. Keep the saved base intact for the following gray settle.
+      first_.clear();
+      second_.clear();
+      const Rect full{0, 0, Width, Height};
+      if (!upload(full) || !transport_.activate(preparationBank_, {0, 0, Width, Height}, false, now, true))
+        return fail();
+      job_ = Job::ZoneHold;
+    }
+    appliedZoneFinish_ = zoneFinish;
+    return true;
+  }
   bool beginSplit(uint32_t now, uint16_t budget) {
     stripPlan_ = planBwStrips(second_, budget);
     return stripPlan_.count ? beginMasked(now) : fail();
@@ -695,6 +727,7 @@ class Calibration {
     programmedHoldRail_ = 0;
     preparationValid_ = true;
     ++nextStrip_;
+    maskedStarted_ = now;
     job_ = Job::Base;
     return true;
   }
@@ -782,6 +815,8 @@ class Calibration {
   bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
   uint32_t imageArgument_{0}, baseCompleted_{0};
+  uint32_t maskedStarted_{0}, zoneWaitMs_{0};
+  ZoneFinish appliedZoneFinish_{ZoneFinish::Off};
   BwStripPlan stripPlan_{};
   BwZonePlan zonePlan_{};
   bool zoneRequested_{false};

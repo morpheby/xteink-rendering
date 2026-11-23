@@ -438,6 +438,48 @@ int main() {
   assert(charge.total[0] && charge.total[1] && charge.recent > 0 && charge.sustained > 0);
   assert(x4render::estimateBwSourceCharge(probes[1], x4render::Width, phaseBank, false).recent < charge.recent);
 
+  // Random timing preserves the exact total per rail and leaves the fixed
+  // references alone. The jittered probe has full bursts, the staggered one
+  // spreads the same dose over all visible row pairs.
+  x4render::Buffer noiseControl;
+  assert(noiseControl.allocate(x4render::PlaneBytes));
+  for (unsigned width : {0u, 16u, 160u, 320u, 576u}) {
+    x4render::paintTestImage(noiseControl, x4render::TestImage::LoadStrip,
+                             (uint32_t(x4render::StripPattern::BurstOne) << 16) | width);
+    const auto control = x4render::estimateBwSourceCharge(x4render::measureBwLoad(noiseControl),
+                                                          x4render::Width, phaseBank, false);
+    for (auto mode : {x4render::StripPattern::Jittered, x4render::StripPattern::Staggered}) {
+      const uint32_t argument = (uint32_t(mode) << 16) | width;
+      x4render::paintTestImage(loadProbe, x4render::TestImage::LoadStrip, argument);
+      const auto load = x4render::measureBwLoad(loadProbe);
+      const bool staggered = mode == x4render::StripPattern::Staggered;
+      assert(load.peak == (staggered && width ? width / 4 + 1 : width / 2));
+      for (const auto& rail : load.direction) assert(rail.total == x4render::Height / 2 * width / 2);
+      const auto estimate = x4render::estimateBwSourceCharge(load, x4render::Width, phaseBank, false);
+      assert(estimate.total == control.total && estimate.boundary == control.boundary);
+      unsigned burst = 0;
+      for (size_t y = 0; y < x4render::Height; ++y) {
+        const auto row = y * (x4render::Width / 8);
+        unsigned whites = 0, switches = 0;
+        for (size_t x = 0; x < x4render::Width / 8; ++x) {
+          whites += x4render::bwPopcount(loadProbe[row + x]);
+          if (y) switches += x4render::bwPopcount(loadProbe[row + x] ^ loadProbe[row + x - x4render::Width / 8]);
+          if (x < (x4render::Width - width) / 16 || x >= (x4render::Width + width) / 16)
+            assert(loadProbe[row + x] == noiseControl[row + x]);
+        }
+        assert(whites == 400);
+        if (!y) continue;
+        if (staggered) {
+          assert(switches == width / 2 || switches == width / 2 + 2);
+        } else {
+          assert(switches == 0 || switches == width);
+          burst = switches ? burst + 1 : 0;
+          assert(burst <= 2);
+        }
+      }
+    }
+  }
+
   // An all-white/all-black alternating row puts every transition on one rail.
   x4render::Buffer oneDirection;
   assert(oneDirection.allocate(x4render::PlaneBytes));

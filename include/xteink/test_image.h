@@ -30,14 +30,49 @@ constexpr bool usesBwTexture(TestImage image) {
 constexpr uint16_t loadStripWidth(uint32_t requested) {
   return uint16_t((requested < LoadStripMaxWidth ? requested : LoadStripMaxWidth) / 16 * 16);
 }
-enum class StripPattern : uint8_t { Centered, Distributed, BurstOne, BurstEight };
+enum class StripPattern : uint8_t { Centered, Distributed, BurstOne, BurstEight, Jittered, Staggered };
 constexpr StripPattern stripPattern(uint32_t argument) {
-  return (argument >> 16) <= 3 ? StripPattern(argument >> 16) : StripPattern::Centered;
+  return (argument >> 16) <= uint32_t(StripPattern::Staggered)
+      ? StripPattern(argument >> 16) : StripPattern::Centered;
+}
+// A fixed seed makes these stimuli comparable across refreshes and drive modes.
+constexpr uint32_t stripNoise(uint32_t index) {
+  uint32_t x = index + 0x9e3779b9u;
+  x = (x ^ (x >> 16)) * 0x7feb352du;
+  x = (x ^ (x >> 15)) * 0x846ca68bu;
+  return x ^ (x >> 16);
 }
 constexpr bool stripPhase(StripPattern pattern, uint16_t y) {
   if (pattern == StripPattern::BurstOne) return ((y + 1) / 2) & 1;
   if (pattern == StripPattern::BurstEight) return std::min(unsigned(y % 16), 8u) & 1;
+  if (pattern == StripPattern::Jittered) {
+    const bool early = (y & 1) && (y + 1 == Height || (stripNoise(y / 2) & 1));
+    return (y / 2 + early) & 1;
+  }
   return y & 1;
+}
+
+inline void staggeredStripRow(uint8_t* row, const uint8_t* previous, unsigned left,
+                              unsigned bytes, uint16_t y, bool extra) {
+  constexpr uint8_t pairChoices[] = {0xF0, 0xCC, 0xC3, 0x3C, 0x33, 0x0F};
+  // Four B/W pairs per byte. Randomize which two switch early, then switch
+  // the other two on the next row. Each pair always keeps one white pixel.
+  const auto extraSeed = stripNoise(0x10000u + y);
+  const unsigned extraByte = left + extraSeed % bytes;
+  for (unsigned x = left; x < left + bytes; ++x) {
+    const auto seed = stripNoise(unsigned((y - 1) / 2) * (Width / 8) + x);
+    uint8_t switching = pairChoices[seed % 6];
+    if (!(y & 1)) switching = uint8_t(~switching);
+    if (extra && x == extraByte) {
+      for (unsigned offset = 0; offset < 4; ++offset) {
+        const uint8_t pair = 0xC0u >> (2 * (((extraSeed >> 16) + offset) % 4));
+        if (switching & pair) continue;
+        switching |= pair;
+        break;
+      }
+    }
+    row[x] = previous[x] ^ switching;
+  }
 }
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
@@ -85,10 +120,20 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
         spread[x / 8] |= 0xC0u >> (x % 8);
       }
     }
+    unsigned extra = 0;
     for (uint16_t y = 0; y < Height; ++y) {
       auto* row = plane.data() + size_t(y) * (Width / 8);
       std::memset(row, 0xAA, Width / 8);
-      if (stripPhase(pattern, y)) {
+      if (pattern == StripPattern::Staggered) {
+        if (y && switchingWidth) {
+          // There are 479 visible transitions. Spread the half-row that
+          // rounds up in the burst probes so the total dose matches exactly.
+          extra += switchingWidth / 4;
+          staggeredStripRow(row, row - Width / 8, leftByte, switchingWidth / 8,
+                            y, extra >= Height - 1);
+          if (extra >= Height - 1) extra -= Height - 1;
+        }
+      } else if (stripPhase(pattern, y)) {
         if (pattern == StripPattern::Distributed)
           for (size_t x = 0; x < spread.size(); ++x) row[x] ^= spread[x];
         else

@@ -303,6 +303,20 @@ int main() {
           assert(!pixel(landscape.uploads[start + 2], x, y) &&
                  !pixel(landscape.uploads[start + 3], x, y));
   }
+  const auto ordinary = landscape.uploads[landscape.uploads.size() - 4];
+  for (const auto image : {x4render::TestImage::RampBase, x4render::TestImage::RampInverse}) {
+    const auto start = landscape.uploads.size();
+    const auto bankCount = landscape.banks.size();
+    assert(photo.startImage(9, image));
+    assert(photo.poll(10) && !photo.settleLut(0));
+    assert(landscape.uploads.size() == start + 2);
+    assert(landscape.banks.size() == bankCount);  // this fixture uses Factory OTP
+    for (size_t i = 0; i < ordinary.size(); ++i) {
+      const auto target = image == x4render::TestImage::RampInverse ? uint8_t(~ordinary[i]) : ordinary[i];
+      assert(landscape.uploads[start][i] == target);
+      assert(landscape.uploads[start + 1][i] == uint8_t(~target));
+    }
+  }
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

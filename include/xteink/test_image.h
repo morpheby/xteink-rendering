@@ -4,10 +4,15 @@
 
 namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
-                                LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp };
+                                LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp, RampBase, RampInverse };
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
+constexpr bool isRampImage(TestImage image) {
+  return image == TestImage::LinearRamp || image == TestImage::RampBase ||
+         image == TestImage::RampInverse;
+}
+
 constexpr bool usesRelativeGray(TestImage image) {
   return image == TestImage::Reference || image == TestImage::Random ||
          image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
@@ -18,7 +23,7 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
   plane.clear(image == TestImage::Black ? 0 : 255);
   if (image == TestImage::White || image == TestImage::Black ||
       image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
-      image == TestImage::LinearRamp) return;
+      isRampImage(image)) return;
   if (image == TestImage::LandscapeDither) {
     Settings bw;
     for (uint16_t y = 20; y < 460; ++y)
@@ -144,7 +149,9 @@ void paintRelativeShades(TestImage image, uint32_t seed, const Settings& setting
               47 + (seed >> 8) % 50, uint8_t(42 + (seed >> 16) % 172));
       }
       break;
-    case TestImage::LinearRamp: {
+    case TestImage::LinearRamp:
+    case TestImage::RampBase:
+    case TestImage::RampInverse: {
       uint8_t left = 0, right = 255;
       for (uint8_t i = 0; i < settings.palette.count; ++i) {
         const auto shade = settings.palette.shades[i];

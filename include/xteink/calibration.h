@@ -46,7 +46,7 @@ class Calibration {
                           TestImage::Calibration, 0);
   }
   bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
-    if (image < TestImage::White || image > TestImage::LinearRamp) return false;
+    if (image < TestImage::White || image > TestImage::RampInverse) return false;
     return startOperation(now, true, false, false, image, seed);
   }
   TestImage image() const { return image_; }
@@ -318,14 +318,14 @@ class Calibration {
     second_.clear(255);
     if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, seed_);
-      if (usesRelativeGray(image_)) {
+      if (usesRelativeGray(image_) || isRampImage(image_)) {
         if (!imagePalette.valid()) return fail();
         paintRelativeShades(image_, seed_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
           packedBit(second_, size_t(y) * Width + x, shade.base);
         });
       }
       if (image_ == TestImage::NeighborSweep) shadeChartLabels();
-      if (image_ == TestImage::LinearRamp) {
+      if (isRampImage(image_)) {
         text(10, 8, "A BLACK TO C WHITE - LINEAR INPUT RAMP", 2);
         text(10, 32, imagePalette.calibrated ? "MEASURED PALETTE" : "PROVISIONAL PALETTE", 1);
         text(10, 57, "NEIGHBOR GRAY DITHER", 2);
@@ -392,8 +392,10 @@ class Calibration {
     }
     // Unknown physical history must not be represented as "OLD was white".
     // Match the normal driver's scrub: every requested pixel transitions.
-    for (size_t i = 0; i < first_.size(); ++i)
-      first_.data()[i] = uint8_t(~second_.data()[i]);
+    for (size_t i = 0; i < first_.size(); ++i) {
+      if (image_ == TestImage::RampInverse) second_[i] = uint8_t(~second_[i]);
+      first_[i] = uint8_t(~second_[i]);
+    }
     if (!upload({0, 0, 800, 480}, true)) return fail();
     if (bwPreparation.programmable && bwPreparation.factoryPrime && !otpPrimed_) {
       if (!transport_.activateOtp(false, now)) return fail();

@@ -647,6 +647,29 @@ int main() {
   assert(texture.zoneRequested() && !texture.zonePlan().count && !texture.driveCount);
   assert(textureTransport.uploads.size() == refused);
 
+  texture.bwBudget = 160;
+  texture.grayColumns = true;
+  texture.grayZoneGuard = true;
+  const auto grayUploads = textureTransport.uploads.size();
+  assert(texture.startImage(50, x4render::TestImage::LinearRamp));
+  const auto grayZones = texture.zonePlan();
+  assert(grayZones.count >= 1 && grayZones.count <= 3);
+  for (uint8_t pass = 0; pass < grayZones.count; ++pass) assert(!texture.poll(51 + pass));
+  assert(texture.poll(55));
+  assert(textureTransport.uploads.size() == grayUploads + 2 * (grayZones.count + 1));
+  x4render::Settings graySettings;
+  graySettings.mode = x4render::Mode::DitherSettle;
+  graySettings.palette = texture.imagePalette;
+  graySettings.columnDither = true;
+  x4render::paintRelativeShades(x4render::TestImage::LinearRamp, 0, graySettings,
+      [&](uint16_t x, uint16_t y, auto shade) {
+        const auto base = grayUploads + 2 * (grayZones.count == 1 ? 0 : grayZones.owners[x / 8]);
+        const auto settle = grayUploads + 2 * grayZones.count;
+        assert(pixel(textureTransport.uploads[base], x, y) == bool(shade.base));
+        assert(pixel(textureTransport.uploads[settle], x, y) == bool(shade.selector & 1));
+        assert(pixel(textureTransport.uploads[settle + 1], x, y) == bool(shade.selector & 2));
+      });
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

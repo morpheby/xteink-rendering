@@ -119,8 +119,9 @@ struct Settings {
   Mode mode{Mode::BwDither};
   Palette palette{};
   uint8_t margin{0};
+  bool columnDither{false};
   bool equivalent(const Settings& b) const {
-    if (mode != b.mode || palette.revision != b.palette.revision ||
+    if (mode != b.mode || columnDither != b.columnDither || palette.revision != b.palette.revision ||
         palette.count != b.palette.count || palette.coverage != b.palette.coverage)
       return false;
     for (uint8_t i = 0; i < palette.count; ++i)
@@ -136,9 +137,17 @@ constexpr uint8_t Bayer[16] = {0, 8,  2, 10, 12, 4, 14, 6,
 constexpr uint8_t bayerRank(uint16_t x, uint16_t y) {
   return Bayer[(y % 4) * 4 + x % 4];
 }
+constexpr uint8_t columnRank(uint16_t x, uint8_t bits) {
+  uint8_t rank = 0;
+  for (uint8_t i = 0; i < bits; ++i) rank = uint8_t((rank << 1) | ((x >> i) & 1));
+  return rank;
+}
+constexpr uint8_t ditherRank(uint16_t x, uint16_t y, bool columns) {
+  return columns ? columnRank(x, 4) : bayerRank(x, y);
+}
 constexpr Shade mixNeighbors(Shade dark, Shade light, uint8_t lightCount,
-                             uint16_t x, uint16_t y) {
-  return bayerRank(x, y) < lightCount ? light : dark;
+                             uint16_t x, uint16_t y, bool columns = false) {
+  return ditherRank(x, y, columns) < lightCount ? light : dark;
 }
 inline uint8_t coverageCount(unsigned distance, unsigned interval, const CoverageCurve& curve) {
   if (!distance) return 0;
@@ -161,14 +170,14 @@ inline uint8_t coverageCount(unsigned distance, unsigned interval, const Coverag
 }
 inline Shade quantize(uint8_t luma, uint16_t x, uint16_t y, const Settings& s) {
   if (s.mode == Mode::BwDither) {
-    const bool white = unsigned(luma) * 32 > unsigned(2 * bayerRank(x, y) + 1) * 255;
+    const bool white = unsigned(luma) * 32 > unsigned(2 * ditherRank(x, y, s.columnDither) + 1) * 255;
     return {uint8_t(white ? 255 : 0), uint8_t(white), 0};
   }
   for (uint8_t i = 1; i < s.palette.count; ++i) {
     const auto a = s.palette.shades[i - 1], b = s.palette.shades[i];
     if (luma <= b.luma)
       return mixNeighbors(a, b, coverageCount(luma - a.luma, b.luma - a.luma,
-                                               s.palette.coverage[i - 1]), x, y);
+                                               s.palette.coverage[i - 1]), x, y, s.columnDither);
   }
   return s.palette.shades[s.palette.count - 1];
 }
@@ -305,6 +314,12 @@ class Frames {
       return false;
     }
     phase = Phase::Prepared;
+    return true;
+  }
+  bool beginAbsoluteBw() {
+    if (busy() || !target.data()) return false;
+    current = {};
+    phase = Phase::Preparing;
     return true;
   }
   bool settle() {

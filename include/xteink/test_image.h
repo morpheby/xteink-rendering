@@ -87,6 +87,12 @@ constexpr bool usesRelativeGray(TestImage image) {
          image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
          image == TestImage::LinearRamp;
 }
+constexpr bool grayPreparationImage(TestImage image) {
+  return usesRelativeGray(image) || isRampImage(image);
+}
+constexpr bool measuresBwImage(TestImage image) {
+  return usesBwTexture(image) || grayPreparationImage(image) || image == TestImage::LoadStrip;
+}
 
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
   if (image == TestImage::SplitCheckerboard || image == TestImage::BwChecker)
@@ -294,6 +300,7 @@ void paintRelativeShades(TestImage image, uint32_t seed, const Settings& setting
         if (relativeShadeId(shade) == 6) right = shade.luma;
       }
       Settings bw;
+      bw.columnDither = settings.columnDither;
       for (uint16_t x = 0; x < Width; ++x) {
         const uint8_t luma = uint8_t((unsigned(left) * (Width - 1 - x) +
                                       unsigned(right) * x + (Width - 1) / 2) / (Width - 1));
@@ -316,7 +323,7 @@ void paintRelativeShades(TestImage image, uint32_t seed, const Settings& setting
         for (uint8_t step = 0; step <= 16; ++step)
           for (uint16_t y = top; y < top + NeighborSwatchHeight; ++y)
             for (uint16_t x = neighborColumn(step); x < neighborColumn(step + 1); ++x)
-              emit(x, y, mixNeighbors(dark, light, step, x, y));
+              emit(x, y, mixNeighbors(dark, light, step, x, y, settings.columnDither));
       }
       break;
     default:

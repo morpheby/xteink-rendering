@@ -7,9 +7,7 @@ enum class BwTexture : uint8_t { Bayer, Columns, Repair, OriginalZoned };
 using BwColumnMask = std::array<uint8_t, Width / 8>;
 
 constexpr bool columnDither(uint8_t luma, uint16_t x) {
-  uint8_t rank = 0;
-  for (uint8_t i = 0; i < 6; ++i) rank = uint8_t((rank << 1) | ((x >> i) & 1));
-  return unsigned(luma) * 128 > unsigned(2 * rank + 1) * 255;
+  return unsigned(luma) * 128 > unsigned(2 * columnRank(x, 6) + 1) * 255;
 }
 
 struct BwRailLoad {

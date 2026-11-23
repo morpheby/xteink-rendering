@@ -47,6 +47,11 @@ int main() {
   assert(f.knowledge == Knowledge::Interrupted && f.displayed[0] == 255);
   assert(f.plan(bw) && f.driven == Pixels);
   finish(f);
+  assert(f.draw(12, 171) && f.beginAbsoluteBw());
+  assert(!f.draw(12, 5) && !f.beginAbsoluteBw());
+  assert(!f.prepared(false) && f.displayed[12] == 255);
+  assert(f.beginAbsoluteBw() && f.prepared(true) && f.commit());
+  assert(f.displayed[12] == 171);
   auto s = gray(Mode::DitherSettle);
   assert(s.palette.valid());
   assert(f.plan(s));
@@ -87,6 +92,18 @@ int main() {
   assert(lighterCount(s, 46) == 12);
   assert(lighterCount(curved, 46) == 9);
   assert(lighterCount(curved, 61) == 16);
+  auto columns = s;
+  columns.columnDither = true;
+  assert(!columns.equivalent(s));
+  for (uint8_t count = 0; count <= 16; ++count) {
+    unsigned selected = 0;
+    for (uint16_t x = 0; x < 16; ++x) {
+      const auto next = mixNeighbors(s.palette.shades[0], s.palette.shades[1], count, x, 4, true);
+      assert(same(next, mixNeighbors(s.palette.shades[0], s.palette.shades[1], count, x, 5, true)));
+      selected += same(next, s.palette.shades[1]);
+    }
+    assert(selected == count);
+  }
   curved.palette.coverage[0][3] = 1;
   assert(!curved.palette.valid());
   s.palette.calibrated = false;

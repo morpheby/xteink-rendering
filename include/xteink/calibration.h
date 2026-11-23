@@ -49,6 +49,8 @@ class Calibration {
   uint8_t columnStrength{100}, repairStrength{100};
   uint8_t columnGrain{0}, burstHeadroom{0};
   bool bwSplitGuard{true};
+  bool grayColumns{false};
+  bool grayZoneGuard{false};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
   bool start(uint32_t now, bool prepare = true, bool rotate = false,
@@ -340,6 +342,7 @@ class Calibration {
     Settings settings;
     settings.mode = Mode::DitherSettle;
     settings.palette = imagePalette;
+    settings.columnDither = grayColumns;
     return settings;
   }
   void shadeChartLabels() {
@@ -369,26 +372,6 @@ class Calibration {
     second_.clear(255);
     if (usesBwTexture(image_)) {
       renderBwPreview();
-      if (bwTexture != BwTexture::Bayer && bwSplitGuard) {
-        driveCount = 0;
-        requested = expanded = lastActivation_ = {};
-        preparationValid_ = settleValid_ = factoryPreparation_ = false;
-        zoneRequested_ = true;
-        zonePlan_ = planBwZones(second_, renderedBwLoad_, bwBudget, bwLocalBudget);
-        if (!zonePlan_.count) {
-          fail();
-          result_ = "source budget exceeds three zones";
-          return false;
-        }
-        if (zonePlan_.count > 1) {
-          if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
-            fail();
-            result_ = "zones require Factory Tuned or Replay, prime off";
-            return false;
-          }
-          return beginMasked(now);
-        }
-      }
     } else if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, imageArgument_);
       if (usesRelativeGray(image_) || isRampImage(image_)) {
@@ -463,13 +446,34 @@ class Calibration {
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
     }
-    if (image_ == TestImage::LoadStrip)
-      requestedBwLoad_ = renderedBwLoad_ = measureBwLoad(second_);
     // Unknown physical history must not be represented as "OLD was white".
     // Match the normal driver's scrub: every requested pixel transitions.
     for (size_t i = 0; i < first_.size(); ++i) {
       if (image_ == TestImage::RampInverse) second_[i] = uint8_t(~second_[i]);
       first_[i] = uint8_t(~second_[i]);
+    }
+    if (grayPreparationImage(image_) || image_ == TestImage::LoadStrip)
+      requestedBwLoad_ = renderedBwLoad_ = measureBwLoad(second_);
+    if ((grayZoneGuard && grayPreparationImage(image_)) ||
+        (bwSplitGuard && usesBwTexture(image_) && bwTexture != BwTexture::Bayer)) {
+      driveCount = 0;
+      requested = expanded = lastActivation_ = {};
+      preparationValid_ = settleValid_ = factoryPreparation_ = false;
+      zoneRequested_ = true;
+      zonePlan_ = planBwZones(second_, renderedBwLoad_, bwBudget, bwLocalBudget);
+      if (!zonePlan_.count) {
+        fail();
+        result_ = "source budget exceeds three zones";
+        return false;
+      }
+      if (zonePlan_.count > 1) {
+        if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
+          fail();
+          result_ = "zones require Factory Tuned or Replay, prime off";
+          return false;
+        }
+        return beginMasked(now);
+      }
     }
     if (!upload({0, 0, 800, 480}, true)) return fail();
     if (bwPreparation.programmable && bwPreparation.factoryPrime && !otpPrimed_) {
@@ -488,7 +492,7 @@ class Calibration {
         preparationBank_ = bank;
         preparationValid_ = true;
         factoryPreparation_ = false;
-        if (usesBwTexture(image_) || image_ == TestImage::LoadStrip)
+        if (measuresBwImage(image_))
           bwCharge_ = estimateBwSourceCharge(renderedBwLoad_, Width, bank, false);
       }
     } else {
@@ -496,7 +500,7 @@ class Calibration {
       if (activated) {
         preparationValid_ = false;
         factoryPreparation_ = true;
-        if ((usesBwTexture(image_) || image_ == TestImage::LoadStrip) && otpBwEstimate)
+        if (measuresBwImage(image_) && otpBwEstimate)
           bwCharge_ = estimateBwSourceCharge(renderedBwLoad_, Width, *otpBwEstimate, false);
       }
     }
@@ -605,7 +609,7 @@ class Calibration {
     // Full addressing with selector 00 outside the strip and on hidden gates.
     const Rect full{0, 0, Width, Height};
     BwSourceCharge charge;
-    if (usesBwTexture(image_))
+    if (measuresBwImage(image_))
       charge = estimateBwSourceCharge(measureBwLoad(splitTarget_, 0, Width, &active),
                                       pixels, preparationBank_, true);
     if (!upload(full) || !transport_.activate(preparationBank_, {0, 0, Width, Height}, false, now, true))

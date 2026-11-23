@@ -55,6 +55,19 @@ x4render::RelativeGrayProfile fit(const std::array<float, 17>& firstPair) {
 preserves endpoint counts and keeps equal outputs for unresolved steps.
 A valid table does not establish that a waveform is optically stable.
 
+## Test stable gray candidates
+
+Use `Calibration::startStable(now, frames, rebuild, rotate)` with a verified
+factory-derived B/W bank for the panel temperature. The three frame counts
+set the lightening pulse lengths after the factory black reset. Rebuild to
+prepare black and white starts and initialize the held gray witness. Repeat
+or rotate the same counts to test convergence from previously displayed
+grays while retaining the reference patches.
+
+`stableGrayBank` builds the combined LUT for transport consumers.
+`measuredStablePalette` orders the three measured tones between the black and
+white endpoints while retaining their LUT selectors.
+
 Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
 The public-domain photo and upstream credits are in the
 [asset notes](assets/README.md).

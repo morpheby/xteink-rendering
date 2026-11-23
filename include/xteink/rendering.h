@@ -264,16 +264,16 @@ class Frames {
       }
     // Margin includes only a small user-selected neighborhood; full-line
     // padding never broadens this drive mask.
-    if (!requested.empty() && settings.margin) {
+    if (!resync && !requested.empty() && settings.margin) {
       std::memcpy(dtm1.data(), mask.data(), PlaneBytes);
-      for (int y = 0; y < Height; ++y)
-        for (int x = 0; x < Width; ++x)
-          if (packedBit(dtm1, size_t(y) * Width + x))
-            for (int dy = -settings.margin; dy <= settings.margin; ++dy)
-              for (int dx = -settings.margin; dx <= settings.margin; ++dx)
-                if (x + dx >= 0 && x + dx < Width && y + dy >= 0 &&
-                    y + dy < Height)
-                  packedBit(mask, size_t(y + dy) * Width + x + dx, true);
+      const int radius = settings.margin;
+      for (int y = requested.y; y < requested.y + requested.height; ++y)
+        for (int x = requested.x; x < requested.x + requested.width; ++x) {
+          if (!packedBit(dtm1, size_t(y) * Width + x)) continue;
+          for (int ny = std::max(0, y - radius); ny <= std::min(Height - 1, y + radius); ++ny)
+            for (int nx = std::max(0, x - radius); nx <= std::min(Width - 1, x + radius); ++nx)
+              packedBit(mask, size_t(ny) * Width + nx, true);
+        }
     }
     if (settings.mode == Mode::DitherSettle && !resync && !requested.empty()) {
       // Fixed-point closure on the union of OLD and NEW gray connectivity.

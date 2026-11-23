@@ -52,6 +52,30 @@ int main() {
   assert(!f.prepared(false) && f.displayed[12] == 255);
   assert(f.beginAbsoluteBw() && f.prepared(true) && f.commit());
   assert(f.displayed[12] == 171);
+  for (const auto mode : {Mode::SingleSettle, Mode::DitherSettle}) {
+    Frames padded;
+    auto settings = gray(mode);
+    assert(padded.allocate() && padded.plan(settings));
+    finish(padded);
+    for (const uint8_t radius : {1, 2}) {
+      settings.margin = radius;
+      assert(padded.plan(settings) && !padded.driven);
+      assert(padded.commit());
+      const auto value = radius == 1 ? 0 : 255;
+      assert(padded.draw(0, value) && padded.draw(10 * Width + 20, value));
+      assert(padded.plan(settings));
+      // One corner kernel clips to the panel, and the other stays separate.
+      const unsigned side = 2 * radius + 1;
+      assert(padded.driven == (radius + 1u) * (radius + 1u) + side * side);
+      assert(padded.requested.width == 21 && padded.requested.height == 11);
+      assert(padded.expanded.width == 21 + radius && padded.expanded.height == 11 + radius);
+      assert(packedBit(padded.mask, size_t(radius) * Width + radius));
+      assert(packedBit(padded.mask, size_t(10 + radius) * Width + 20 + radius));
+      assert(!packedBit(padded.mask, 5 * Width + 10));
+      assert(!packedBit(padded.mask, Width - 1));
+      finish(padded);
+    }
+  }
   auto s = gray(Mode::DitherSettle);
   assert(s.palette.valid());
   assert(f.plan(s));

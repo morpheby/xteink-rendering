@@ -27,10 +27,10 @@ inline unsigned bwPopcount(uint8_t bits) { return __builtin_popcount(bits); }
 constexpr uint16_t bwRecovery(uint16_t previous, unsigned switches) {
   return uint16_t((235u * previous >> 8) + 21u * switches);
 }
-inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t right = Width,
-                           const BwColumnMask* lanes = nullptr) {
+template <class Read>
+BwLoad measureRailLoad(Read read, uint16_t left, uint16_t right, const BwColumnMask* lanes) {
   constexpr size_t stride = Width / 8;
-  if (image.size() != PlaneBytes || left >= right || right > Width || (left & 7) || (right & 7)) return {};
+  if (left >= right || right > Width || (left & 7) || (right & 7)) return {};
   const size_t start = left / 8, stop = right / 8;
   const size_t span = std::min(size_t(128 / 8), stop - start);
   std::array<std::array<uint16_t, stride>, 2> recent{}, sustained{};
@@ -38,8 +38,8 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
   BwLoad load;
   for (size_t x = start; x < stop; ++x) {
     if (lanes && !(*lanes)[x]) continue;
-    load.firstWhite += bwPopcount(image[x]);
-    load.lastWhite += bwPopcount(image[(Height - 1) * stride + x]);
+    load.firstWhite += bwPopcount(read(x)[0]);
+    load.lastWhite += bwPopcount(read((Height - 1) * stride + x)[0]);
   }
   for (size_t y = 1; y < Height; ++y) {
     std::array<std::array<uint8_t, stride>, 2> directed;
@@ -49,14 +49,19 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
         directed[0][x] = directed[1][x] = 0;
         continue;
       }
-      const uint8_t before = image[(y - 1) * stride + x], after = image[y * stride + x];
-      const uint8_t changed = before ^ after;
-      directed[0][x] = bwPopcount(changed & after);
-      directed[1][x] = bwPopcount(changed & before);
+      const auto before = read((y - 1) * stride + x), after = read(y * stride + x);
+      for (size_t rail = 0; rail < 2; ++rail) {
+        const auto other = 1 - rail;
+        // A change to or from hold is half a full rail-to-rail swing.
+        const unsigned enter = bwPopcount(after[rail] & ~before[rail]);
+        const unsigned leave = bwPopcount(before[other] & ~after[other]);
+        directed[rail][x] = enter + leave;
+      }
       total[0] += directed[0][x];
       total[1] += directed[1][x];
     }
     for (size_t rail = 0; rail < 2; ++rail) {
+      total[rail] = (total[rail] + 1) / 2;
       auto& output = load.direction[rail];
       wholeRecent[rail] = (235u * wholeRecent[rail] >> 8) + 21u * total[rail];
       load.wholeRecentPeak = std::max<uint16_t>(load.wholeRecentPeak, (wholeRecent[rail] + 128u) >> 8);
@@ -68,12 +73,13 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
         if (x >= start + span) sum -= directed[rail][x - span];
         if (x + 1 < start + span) continue;
         const size_t cell = x + 1 - span;
+        const unsigned switches = (sum + 1) / 2;
         auto& state = recent[rail][cell];
-        state = bwRecovery(state, sum);
+        state = bwRecovery(state, switches);
         auto& slow = sustained[rail][cell];
         constexpr uint32_t alpha32 = 64132;  // Q16 decay over one row.
-        slow = (alpha32 * slow + (65536u - alpha32) * sum * 256u) >> 16;
-        output.localPeak = std::max<uint16_t>(output.localPeak, sum);
+        slow = (alpha32 * slow + (65536u - alpha32) * switches * 256u) >> 16;
+        output.localPeak = std::max<uint16_t>(output.localPeak, switches);
         output.recentPeak = std::max<uint16_t>(output.recentPeak, (state + 128u) >> 8);
         output.sustainedPeak = std::max<uint16_t>(output.sustainedPeak, (slow + 128u) >> 8);
       }
@@ -84,6 +90,14 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
   load.recentPeak = std::max(load.direction[0].recentPeak, load.direction[1].recentPeak);
   load.sustainedPeak = std::max(load.direction[0].sustainedPeak, load.direction[1].sustainedPeak);
   return load;
+}
+
+inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t right = Width,
+                           const BwColumnMask* lanes = nullptr) {
+  if (image.size() != PlaneBytes) return {};
+  return measureRailLoad([&](size_t i) {
+    return std::array<uint8_t, 2>{image[i], uint8_t(~image[i])};
+  }, left, right, lanes);
 }
 
 namespace bw_detail {

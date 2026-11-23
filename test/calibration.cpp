@@ -1,4 +1,5 @@
 #include <xteink/calibration.h>
+#include <xteink/gray_refresh.h>
 
 #include <cassert>
 #include <iostream>
@@ -101,6 +102,66 @@ int main() {
   assert(stableSettings.palette.calibrated);
   assert(x4render::quantize(71, 0, 0, stableSettings).selector == 2);
   assert(x4render::quantize(71, 1, 0, stableSettings).selector == 2);
+  {
+    using namespace x4render;
+    Frames frame;
+    assert(frame.allocate());
+    GrayRefresh refresh(frame);
+    Fake bus;
+    const auto bw = preparation(BwPreparation{});
+    const auto settle = candidates({{Pulse{}, Pulse{}, Pulse{}}});
+    frame.target.clear(60);
+    assert(frame.plan(stableSettings) && refresh.plan(bw, settle, 96, 40));
+    assert(!refresh.preparationPasses() && refresh.settlePasses() == 1);
+    assert(refresh.start(bus, 0) && !refresh.poll(bus, 1));
+    assert(bus.commands == (std::vector<uint8_t>{0x13, 0x10}));
+    assert(!pixel(bus.newRam, 20, 20) && pixel(bus.oldRam, 20, 20));
+    assert(bus.hiddenFills == (std::vector<uint8_t>{0, 0}));
+    assert(frame.displayed[0] == 255 && refresh.poll(bus, 2));
+    assert(refresh.stage == GrayRefresh::Stage::Done && frame.commit());
+
+    assert(frame.draw(752, 255) && frame.plan(stableSettings));
+    assert(refresh.plan(bw, settle, 96, 40) && refresh.preparationPasses() == 1);
+    assert(!refresh.settlePasses() && frame.driven == 1);
+    assert(bus.powerOff(2) && refresh.start(bus, 3) && !refresh.poll(bus, 4));
+    assert(bus.banks.back()[Row[0]] == bw[0] && bus.banks.back()[Row[3]] == bw[0]);
+    assert(pixel(bus.newRam, 752, 0) && !pixel(bus.oldRam, 752, 0));
+    assert(!pixel(bus.newRam, 753, 0) && !pixel(bus.oldRam, 753, 0));
+    bus.result = Fake::Result::CompletionTimeout;
+    assert(refresh.poll(bus, 5) && refresh.stage == GrayRefresh::Stage::Failed);
+    assert(frame.displayed[752] == 60 && frame.knowledge == Knowledge::Interrupted);
+
+    Settings relative;
+    relative.mode = Mode::DitherSettle;
+    relative.palette = completePalette;
+    frame.target.clear(100);  // A from white
+    assert(frame.plan(relative) && refresh.plan(bw, settle, 96, 40));
+    assert(refresh.preparationPasses() == 1 && refresh.settlePasses() == 1);
+    bus.result = Fake::Result::Complete;
+    assert(bus.powerOff(5) && refresh.start(bus, 6) && !refresh.poll(bus, 7));
+    assert(pixel(bus.newRam, 752, 0) && !pixel(bus.oldRam, 752, 0));
+    assert(!refresh.poll(bus, 8) && bus.banks.back() == settle);
+    assert(pixel(bus.newRam, 752, 0) && !pixel(bus.oldRam, 752, 0));
+    assert(refresh.poll(bus, 9) && frame.commit());
+
+    relative.palette.count = 4;
+    relative.palette.shades = {{{0, 0, 0}, {100, 0, 1}, {156, 1, 1}, {255, 1, 0}}};
+    frame.target.clear(128);
+    assert(frame.plan(relative) && refresh.plan(bw, settle, 160, 64));
+    assert(refresh.preparationPasses() == 3 && refresh.settlePasses() == 3);
+    Fake zoned;
+    assert(refresh.start(zoned, 10));
+    for (unsigned pass = 0; pass < 7; ++pass)
+      assert(!refresh.poll(zoned, 11 + pass));
+    assert(refresh.poll(zoned, 18) && zoned.banks.size() == 7);
+    for (unsigned i = 0; i < 3; ++i) {
+      assert(zoned.banks[i + 4] == settle);
+      for (unsigned x = 0; x < Width; ++x) {
+        const bool prepared = pixel(zoned.uploads[2*i], x, 0) || pixel(zoned.uploads[2*i+1], x, 0);
+        assert(pixel(zoned.uploads[2*i+8], x, 0) == prepared);
+      }
+    }
+  }
 
   Fake t;
   x4render::Calibration<Fake> lab(t);

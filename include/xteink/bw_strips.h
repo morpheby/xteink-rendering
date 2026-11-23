@@ -24,11 +24,11 @@ struct BwZonePlan {
   }
 };
 
-inline BwZonePlan planBwZones(const Buffer& target, const BwLoad& full, unsigned railBudget,
-                              unsigned localBudget) {
+template <class Measure>
+BwZonePlan planBwZones(Measure measure, unsigned railBudget, unsigned localBudget) {
   constexpr uint8_t maxZones = 3;
   BwZonePlan plan;
-  plan.include(full);
+  measure(plan, nullptr);
   if (plan.fits(railBudget, localBudget)) {
     plan.count = 1;
     return plan;
@@ -44,13 +44,20 @@ inline BwZonePlan planBwZones(const Buffer& target, const BwLoad& full, unsigned
       for (uint8_t zone = 0; zone < zones; ++zone) {
         BwColumnMask active;
         for (size_t x = 0; x < active.size(); ++x) active[x] = plan.owners[x] == zone;
-        plan.include(measureBwLoad(target, 0, Width, &active));
+        measure(plan, &active);
         if (!plan.fits(railBudget, localBudget)) break;
       }
       if (plan.fits(railBudget, localBudget)) return plan;
     }
   }
   return {};
+}
+
+inline BwZonePlan planBwZones(const Buffer& target, const BwLoad& full, unsigned railBudget,
+                             unsigned localBudget) {
+  return planBwZones([&](BwZonePlan& plan, const BwColumnMask* active) {
+    plan.include(active ? measureBwLoad(target, 0, Width, active) : full);
+  }, railBudget, localBudget);
 }
 
 inline BwStripPlan planBwStrips(const Buffer& target, uint16_t railBudget) {

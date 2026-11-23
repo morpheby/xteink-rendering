@@ -237,7 +237,7 @@ class Frames {
     return phase == Phase::Planned || phase == Phase::Preparing ||
            phase == Phase::Prepared || phase == Phase::Settling;
   }
-  bool plan(Settings settings) {
+  bool plan(Settings settings, bool force = false) {
     if (busy() || !target.data() || !settings.palette.valid() ||
         (settings.mode != Mode::BwDither && !settings.palette.calibrated))
       return false;
@@ -247,12 +247,17 @@ class Frames {
     expanded = {};
     driven = 0;
     const bool resync =
-        knowledge != Knowledge::Known || !current.equivalent(previous);
+        force || knowledge != Knowledge::Known || !current.equivalent(previous);
+    std::array<ShadeMix, 256> previousMix, currentMix;
+    for (size_t i = 0; i < currentMix.size(); ++i) {
+      previousMix[i] = quantizeMix(i, previous);
+      currentMix[i] = quantizeMix(i, current);
+    }
     for (uint16_t y = 0; y < Height; ++y)
       for (uint16_t x = 0; x < Width; ++x) {
         const size_t i = size_t(y) * Width + x;
-        if (resync || !same(quantize(displayed[i], x, y, previous),
-                            quantize(target[i], x, y, current))) {
+        if (resync || !same(previousMix[displayed[i]].sample(x, y, previous.columnDither),
+                            currentMix[target[i]].sample(x, y, current.columnDither))) {
           packedBit(mask, i, true);
           requested.include(x, y);
         }
@@ -270,7 +275,7 @@ class Frames {
                     y + dy < Height)
                   packedBit(mask, size_t(y + dy) * Width + x + dx, true);
     }
-    if (settings.mode == Mode::DitherSettle) {
+    if (settings.mode == Mode::DitherSettle && !resync && !requested.empty()) {
       // Fixed-point closure on the union of OLD and NEW gray connectivity.
       // A bounded scan avoids a full-screen queue or queue overflow fallback.
       bool grew;
@@ -280,8 +285,8 @@ class Frames {
           for (uint16_t x = 0; x < Width; ++x) {
             size_t i = size_t(y) * Width + x;
             if (packedBit(mask, i)) continue;
-            const auto old = quantize(displayed[i], x, y, previous),
-                       next = quantize(target[i], x, y, current);
+            const auto old = previousMix[displayed[i]].sample(x, y, previous.columnDither),
+                       next = currentMix[target[i]].sample(x, y, current.columnDither);
             if (!old.selector && !next.selector) continue;
             if ((x && packedBit(mask, i - 1)) ||
                 (x + 1 < Width && packedBit(mask, i + 1)) ||
@@ -354,7 +359,7 @@ class Frames {
     return true;
   }
   bool commit() {
-    if (phase != Phase::Settling &&
+    if (!(phase == Phase::Complete && !driven) && phase != Phase::Settling &&
         !(phase == Phase::Prepared && current.mode == Mode::BwDither))
       return false;
     std::memcpy(displayed.data(), target.data(), Pixels);

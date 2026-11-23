@@ -415,6 +415,29 @@ int main() {
     }
   }
 
+  // Equal whole-row peaks can have different local and sustained loads.
+  x4render::Buffer loadProbe;
+  assert(loadProbe.allocate(x4render::PlaneBytes));
+  std::array<x4render::BwLoad, 4> probes;
+  for (unsigned pattern = 0; pattern < probes.size(); ++pattern) {
+    x4render::paintTestImage(loadProbe, x4render::TestImage::LoadStrip, (pattern << 16) | 320);
+    probes[pattern] = x4render::measureBwLoad(loadProbe);
+    assert(probes[pattern].peak == 160 && probes[pattern].firstWhite == 400);
+  }
+  assert(probes[0].localPeak > probes[1].localPeak);
+  assert(probes[0].direction[0].total == probes[1].direction[0].total);
+  assert(probes[2].direction[0].total == probes[3].direction[0].total);
+  assert(probes[2].recentPeak < probes[3].recentPeak);
+  x4render::LutBank phaseBank{};
+  for (auto& row : phaseBank) row = x4render::Lut{1, 2, 1, 0, 0, 1, 1};
+  phaseBank[x4render::Row[1]][1] = phaseBank[x4render::Row[3]][1] = 0x42;
+  phaseBank[x4render::Row[2]][1] = 0x82;
+  phaseBank[x4render::Row[1]][2] = phaseBank[x4render::Row[3]][2] = 0x81;
+  const auto charge = x4render::estimateBwSourceCharge(probes[0], x4render::Width, phaseBank, false);
+  assert(charge.frames == 3 && charge.both == 320 && charge.one == 160 && charge.boundary >= 800);
+  assert(charge.total[0] && charge.total[1] && charge.recent > 0 && charge.sustained > 0);
+  assert(x4render::estimateBwSourceCharge(probes[1], x4render::Width, phaseBank, false).recent < charge.recent);
+
   // An all-white/all-black alternating row puts every transition on one rail.
   x4render::Buffer oneDirection;
   assert(oneDirection.allocate(x4render::PlaneBytes));
@@ -487,6 +510,20 @@ int main() {
                    (x4render::isLoadPatch(x, y) ? pixel(checkerboard, x, y) : (x % 2 == 0)));
     }
   }
+  texture.bwSplitGuard = false;
+  for (const auto mode : {x4render::BwTexture::Columns, x4render::BwTexture::Repair}) {
+    texture.bwTexture = mode;
+    texture.columnStrength = texture.repairStrength = 0;
+    const auto uploads = textureTransport.uploads.size();
+    assert(texture.startImage(27, x4render::TestImage::BwChecker) && texture.poll(28));
+    assert(textureTransport.uploads[uploads] == checkerboard);
+    texture.columnStrength = texture.repairStrength = 75;
+    assert(texture.startImage(27, x4render::TestImage::BwChecker) && texture.poll(28));
+    assert(texture.bwStrength() == 75 && !texture.stripCount());
+    assert(texture.renderedBwLoad().peak > 80 && texture.renderedBwLoad().peak < 400);
+  }
+  texture.bwSplitGuard = true;
+  texture.columnStrength = texture.repairStrength = 100;
 
   // A protected full-width 1 px rule must be drawn exactly, using the split
   // path when one scan line exceeds the directed transition limit.

@@ -1,5 +1,6 @@
 #pragma once
 #include "bw_approximation.h"
+#include "bw_source_charge.h"
 #include "bw_strips.h"
 #include "rendering.h"
 #include "waveform.h"
@@ -40,9 +41,11 @@ class Calibration {
   BwPreparation bwPreparation{};
   Palette imagePalette = provisionalRelativePalette();
   std::optional<LutBank> factoryDerivedBw{};
+  std::optional<LutBank> otpBwEstimate{};
   const uint8_t* boilerLuma{nullptr};   // Caller keeps its committed frame stable during the lab session.
   BwTexture bwTexture{BwTexture::Bayer};
   uint16_t bwBudget{80};
+  uint8_t columnStrength{100}, repairStrength{100};
   bool bwSplitGuard{true};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
@@ -74,11 +77,14 @@ class Calibration {
   }
   TestImage image() const { return image_; }
   uint32_t imageSeed() const { return imageArgument_; }
-  uint16_t stripWidth() const { return loadStripWidth(imageArgument_); }
+  uint16_t stripWidth() const { return loadStripWidth(imageArgument_ & 0xFFFFu); }
+  StripPattern loadPattern() const { return stripPattern(imageArgument_); }
   uint8_t stripCount() const { return stripPlan_.count; }
   BwLoad requestedBwLoad() const { return requestedBwLoad_; }
   BwLoad renderedBwLoad() const { return renderedBwLoad_; }
+  BwSourceCharge bwCharge() const { return bwCharge_; }
   BwTexture renderedBwTexture() const { return protectedFallback_ ? BwTexture::Bayer : bwTexture; }
+  uint8_t bwStrength() const { return bwTexture == BwTexture::Repair ? repairStrength : columnStrength; }
   bool protectedFallback() const { return protectedFallback_; }
 
  private:
@@ -94,6 +100,7 @@ class Calibration {
     stripPlan_.count = nextStrip_ = 0;
     protectedFallback_ = false;
     requestedBwLoad_ = renderedBwLoad_ = {};
+    bwCharge_ = {};
     pauseMs_ = bwPreparation.pauseMs;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
@@ -438,6 +445,8 @@ class Calibration {
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
     }
+    if (image_ == TestImage::LoadStrip)
+      requestedBwLoad_ = renderedBwLoad_ = measureBwLoad(second_);
     // Unknown physical history must not be represented as "OLD was white".
     // Match the normal driver's scrub: every requested pixel transitions.
     for (size_t i = 0; i < first_.size(); ++i) {
@@ -461,12 +470,16 @@ class Calibration {
         preparationBank_ = bank;
         preparationValid_ = true;
         factoryPreparation_ = false;
+        if (usesBwTexture(image_) || image_ == TestImage::LoadStrip)
+          bwCharge_ = estimateBwSourceCharge(renderedBwLoad_, Width, bank, false);
       }
     } else {
       activated = transport_.activateOtp(false, now);
       if (activated) {
         preparationValid_ = false;
         factoryPreparation_ = true;
+        if ((usesBwTexture(image_) || image_ == TestImage::LoadStrip) && otpBwEstimate)
+          bwCharge_ = estimateBwSourceCharge(renderedBwLoad_, Width, *otpBwEstimate, false);
       }
     }
     if (!activated) return fail();
@@ -508,18 +521,18 @@ class Calibration {
     };
     bayer();
     requestedBwLoad_ = measureBwLoad(second_);
-    if (bwTexture == BwTexture::Columns) {
+    if (bwTexture == BwTexture::Columns && columnStrength) {
       for (uint16_t y = 0; y < Height; ++y)
         for (uint16_t x = 0; x < Width; ++x) {
-          if (protectedMark(x, y)) continue;
+          if (!useColumnDither(x, y, columnStrength) || protectedMark(x, y)) continue;
           const size_t i = size_t(y) * Width + x;
           packedBit(second_, i, columnDither(luma(i), x));
         }
-    } else if (bwTexture == BwTexture::Repair) {
+    } else if (bwTexture == BwTexture::Repair && repairStrength) {
       const auto edits = repairBwRows(second_, bwBudget, [&](uint16_t x, uint16_t y) {
         const int tone = luma(size_t(y) * Width + x);
         return std::min(3, std::abs(tone - 128) / 32) + 8 * protectedMark(x, y);
-      });
+      }, repairStrength);
       // The checkerboard witnesses may show small repair artifacts. Do not
       // trade away actual dashboard marks to make a load count pass.
       if (boiler && edits) {
@@ -562,8 +575,13 @@ class Calibration {
     }
     // Full addressing with selector 00 outside the strip and on hidden gates.
     const Rect full{0, 0, Width, Height};
+    BwSourceCharge charge;
+    if (usesBwTexture(image_))
+      charge = estimateBwSourceCharge(measureBwLoad(splitTarget_, left, right),
+                                      right - left, preparationBank_, true);
     if (!upload(full) || !transport_.activate(preparationBank_, {0, 0, Width, Height}, false, now, true))
       return fail();
+    bwCharge_.include(charge);
     requested = {left, 0, uint16_t(right - left), Height};
     expanded = lastActivation_ = full;
     driveCount += uint32_t(requested.width) * Height;
@@ -655,6 +673,7 @@ class Calibration {
   uint32_t imageArgument_{0}, baseCompleted_{0};
   BwStripPlan stripPlan_{};
   BwLoad requestedBwLoad_{}, renderedBwLoad_{};
+  BwSourceCharge bwCharge_{};
   bool protectedFallback_{false};
   uint8_t nextStrip_{0};
   uint16_t pauseMs_{0};

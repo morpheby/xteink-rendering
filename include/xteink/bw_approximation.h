@@ -11,22 +11,35 @@ constexpr bool columnDither(uint8_t luma, uint16_t x) {
   return unsigned(luma) * 128 > unsigned(2 * rank + 1) * 255;
 }
 
+struct BwRailLoad {
+  uint16_t peak{0}, localPeak{0}, recentPeak{0}, sustainedPeak{0};
+  uint32_t total{0};
+};
 struct BwLoad {
-  uint16_t peak{0}, localPeak{0}, recentPeak{0};
+  uint16_t peak{0}, localPeak{0}, recentPeak{0}, sustainedPeak{0};
+  uint16_t firstWhite{0}, lastWhite{0};
+  std::array<BwRailLoad, 2> direction{};  // White arrivals, then black arrivals.
 };
 inline unsigned bwPopcount(uint8_t bits) { return __builtin_popcount(bits); }
 // Q8 leaky average with approximately eight scan lines of half-life.
 constexpr uint16_t bwRecovery(uint16_t previous, unsigned switches) {
   return uint16_t((235u * previous >> 8) + 21u * switches);
 }
-inline BwLoad measureBwLoad(const Buffer& image) {
-  constexpr unsigned stride = Width / 8, span = 128 / 8;
-  std::array<std::array<uint16_t, stride - span + 1>, 2> recent{};
+inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t right = Width) {
+  constexpr size_t stride = Width / 8;
+  if (image.size() != PlaneBytes || left >= right || right > Width || (left & 7) || (right & 7)) return {};
+  const size_t start = left / 8, stop = right / 8;
+  const size_t span = std::min(size_t(128 / 8), stop - start);
+  std::array<std::array<uint16_t, stride>, 2> recent{}, sustained{};
   BwLoad load;
+  for (size_t x = start; x < stop; ++x) {
+    load.firstWhite += bwPopcount(image[x]);
+    load.lastWhite += bwPopcount(image[(Height - 1) * stride + x]);
+  }
   for (size_t y = 1; y < Height; ++y) {
     std::array<std::array<uint8_t, stride>, 2> directed;
     unsigned total[2]{};
-    for (size_t x = 0; x < stride; ++x) {
+    for (size_t x = start; x < stop; ++x) {
       const uint8_t before = image[(y - 1) * stride + x], after = image[y * stride + x];
       const uint8_t changed = before ^ after;
       directed[0][x] = bwPopcount(changed & after);
@@ -35,19 +48,30 @@ inline BwLoad measureBwLoad(const Buffer& image) {
       total[1] += directed[1][x];
     }
     for (size_t rail = 0; rail < 2; ++rail) {
-      load.peak = std::max<uint16_t>(load.peak, total[rail]);
+      auto& output = load.direction[rail];
+      output.peak = std::max<uint16_t>(output.peak, total[rail]);
+      output.total += total[rail];
       unsigned sum = 0;
-      for (size_t x = 0; x < stride; ++x) {
+      for (size_t x = start; x < stop; ++x) {
         sum += directed[rail][x];
-        if (x >= span) sum -= directed[rail][x - span];
-        if (x + 1 < span) continue;
-        auto& state = recent[rail][x + 1 - span];
+        if (x >= start + span) sum -= directed[rail][x - span];
+        if (x + 1 < start + span) continue;
+        const size_t cell = x + 1 - span;
+        auto& state = recent[rail][cell];
         state = bwRecovery(state, sum);
-        load.localPeak = std::max<uint16_t>(load.localPeak, sum);
-        load.recentPeak = std::max<uint16_t>(load.recentPeak, (state + 128u) >> 8);
+        auto& slow = sustained[rail][cell];
+        constexpr uint32_t alpha32 = 64132;  // Q16 decay over one row.
+        slow = (alpha32 * slow + (65536u - alpha32) * sum * 256u) >> 16;
+        output.localPeak = std::max<uint16_t>(output.localPeak, sum);
+        output.recentPeak = std::max<uint16_t>(output.recentPeak, (state + 128u) >> 8);
+        output.sustainedPeak = std::max<uint16_t>(output.sustainedPeak, (slow + 128u) >> 8);
       }
     }
   }
+  load.peak = std::max(load.direction[0].peak, load.direction[1].peak);
+  load.localPeak = std::max(load.direction[0].localPeak, load.direction[1].localPeak);
+  load.recentPeak = std::max(load.direction[0].recentPeak, load.direction[1].recentPeak);
+  load.sustainedPeak = std::max(load.direction[0].sustainedPeak, load.direction[1].sustainedPeak);
   return load;
 }
 
@@ -119,13 +143,21 @@ uint8_t retain(uint8_t wanted, unsigned quota, uint32_t offset, Priority priorit
 }
 }  // namespace bw_detail
 
+inline bool useColumnDither(uint16_t x, uint16_t y, unsigned strength) {
+  // Whole 4x4 dither cells use one pattern. Coordinate hashing spreads the
+  // remaining Bayer cells instead of phasing every column on the same row.
+  return strength >= 100 || (strength && bw_detail::phase(y / 4, x / 4) % 100 < strength);
+}
+
 // Repair in panel scan order. Only a desired transition can be suppressed.
 // The callback grades a pixel 0..11; grades 8..11 are protected marks.
 // Return the number of protected marks the budget forced us to change.
 template <class Priority>
-uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority) {
+uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority, unsigned strength = 100) {
   using namespace bw_detail;
   constexpr size_t stride = Width / 8;
+  if (!strength) return 0;
+  strength = std::min(strength, 100u);
   const unsigned tilePeak = 3 * budget / 20, tileSustained = budget / 10;
   std::array<std::array<uint16_t, TileCount>, 2> recent{};
   uint32_t protectedEdits = 0;
@@ -141,16 +173,20 @@ uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority) {
       }
       int drop = 0;
       for (size_t rail = 0; rail < 2; ++rail) {
-        const unsigned open = (256u * tileSustained - bwRecovery(recent[rail][tile], 0)) / 21u;
+        const unsigned carry = bwRecovery(recent[rail][tile], 0);
+        const unsigned open = carry < 256u * tileSustained ? (256u * tileSustained - carry) / 21u : 0;
         drop = std::max(drop, int(requested[rail][tile]) - int(std::min(tilePeak, open)));
       }
+      drop = (drop * int(strength) + 99) / 100;
       for (size_t rail = 0; rail < 2; ++rail)
         room[rail][tile] = std::max(0, int(requested[rail][tile]) - drop);
     }
     const unsigned whites = total(room[0]), blacks = total(room[1]);
     const unsigned most = std::max(whites, blacks);
-    if (most > budget)
-      suppress(room, std::min(whites, most - budget), std::min(blacks, most - budget), phase(y));
+    if (most > budget) {
+      const unsigned drop = ((most - budget) * strength + 99) / 100;
+      suppress(room, std::min(whites, drop), std::min(blacks, drop), phase(y));
+    }
     for (size_t tile = 0; tile < TileCount; ++tile) {
       for (size_t rail = 0; rail < 2; ++rail)
         recent[rail][tile] = bwRecovery(recent[rail][tile], room[rail][tile]);

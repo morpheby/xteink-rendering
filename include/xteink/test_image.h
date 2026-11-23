@@ -30,6 +30,15 @@ constexpr bool usesBwTexture(TestImage image) {
 constexpr uint16_t loadStripWidth(uint32_t requested) {
   return uint16_t((requested < LoadStripMaxWidth ? requested : LoadStripMaxWidth) / 16 * 16);
 }
+enum class StripPattern : uint8_t { Centered, Distributed, BurstOne, BurstEight };
+constexpr StripPattern stripPattern(uint32_t argument) {
+  return (argument >> 16) <= 3 ? StripPattern(argument >> 16) : StripPattern::Centered;
+}
+constexpr bool stripPhase(StripPattern pattern, uint16_t y) {
+  if (pattern == StripPattern::BurstOne) return ((y + 1) / 2) & 1;
+  if (pattern == StripPattern::BurstEight) return std::min(unsigned(y % 16), 8u) & 1;
+  return y & 1;
+}
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
@@ -59,13 +68,32 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
       std::memset(swatches + 2 * swatchBytes, 0xFF, swatchBytes);
     };
     const bool strip = image == TestImage::LoadStrip;
-    const auto switchingWidth = strip ? loadStripWidth(argument)
+    const auto switchingWidth = strip ? loadStripWidth(argument & 0xFFFFu)
         : image == TestImage::LoadCheckerboard ? Width : 0;
     const size_t leftByte = (Width - switchingWidth) / 16;
+    const auto pattern = strip ? stripPattern(argument) : StripPattern::Centered;
+    std::array<uint8_t, Width / 8> spread{};
+    if (pattern == StripPattern::Distributed) {
+      constexpr unsigned pairs = (Width - 2 * LoadReferenceWidth) / 2;
+      unsigned error = 0;
+      for (uint16_t x = 0; x < Width; x += 2) {
+        if ((x >= LoadReferenceInset && x < LoadReferenceInset + LoadReferenceWidth) ||
+            (x >= Width - LoadReferenceInset - LoadReferenceWidth && x < Width - LoadReferenceInset)) continue;
+        error += switchingWidth / 2;
+        if (error < pairs) continue;
+        error -= pairs;
+        spread[x / 8] |= 0xC0u >> (x % 8);
+      }
+    }
     for (uint16_t y = 0; y < Height; ++y) {
       auto* row = plane.data() + size_t(y) * (Width / 8);
       std::memset(row, 0xAA, Width / 8);
-      if (y & 1) std::memset(row + leftByte, 0x55, switchingWidth / 8);
+      if (stripPhase(pattern, y)) {
+        if (pattern == StripPattern::Distributed)
+          for (size_t x = 0; x < spread.size(); ++x) row[x] ^= spread[x];
+        else
+          std::memset(row + leftByte, 0x55, switchingWidth / 8);
+      }
       if (strip) {
         // Full-height triplets avoid adding transitions at patch boundaries.
         reference(row, LoadReferenceInset);

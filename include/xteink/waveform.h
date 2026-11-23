@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
 namespace x4render {
 using Lut = std::array<uint8_t, 49>;
@@ -161,6 +162,69 @@ constexpr LutBank preparation(BwPreparation p, uint8_t holdRail = 0) {
   }
   return bank;
 }
+struct FactoryBwTuning {
+  uint8_t shakeFrames = 0;
+  uint8_t shakeCycles = 2;
+  uint8_t whiteReference = 0;
+  int8_t driveTrim = 0;
+  int8_t pauseTrim = 0;
+};
+
+// The verified full B/W table family uses two groups, pair repeats of one,
+// and two identical transition rows for each endpoint. Limit edits to that
+// shape. Copy the original byte-for-byte when all adjustments are zero.
+constexpr bool tuneFactoryBw(const LutBank& factory, FactoryBwTuning tuning, LutBank& result) {
+  if (tuning.shakeFrames > 8 || tuning.shakeCycles > 4 ||
+      tuning.whiteReference > 32 || tuning.driveTrim < -8 || tuning.driveTrim > 8 ||
+      tuning.pauseTrim < -4 || tuning.pauseTrim > 8)
+    return false;
+  const auto& vcom = factory[0];
+  const int inverse = vcom[1];
+  const int pause = vcom[2];
+  const int first = vcom[3];
+  const int last = vcom[4];
+  if (inverse != first + last || first == 0 || last == 0 || last != vcom[8] ||
+      pause != 4 || inverse > 63 || factory[1] != factory[2] || factory[3] != factory[4])
+    return false;
+  const int adjustedInverse = inverse + tuning.driveTrim;
+  const int adjustedFirst = first + tuning.driveTrim;
+  const int adjustedPause = pause + tuning.pauseTrim;
+  if (adjustedFirst < 1 || adjustedInverse > 63) return false;
+  result = {};
+  for (size_t row = 0; row < factory.size(); ++row) {
+    const bool white = row == 1 || row == 2;
+    const uint8_t toward = row == 0 ? 0 : white ? 2 : 1;
+    const uint8_t away = row == 0 ? 0 : uint8_t(3 - toward);
+    const uint8_t mid = white ? toward : 0;
+    const uint8_t finish = white ? 0 : toward;
+    const Lut expected{1, phaseCode(away, inverse), phaseCode(0, pause),
+                       phaseCode(toward, first), phaseCode(mid, last), 1, 1,
+                       1, phaseCode(finish, last), 0, 0, 0, 1, 1};
+    if (factory[row] != expected) return false;
+    auto& dest = result[row];
+    size_t offset = 0;
+    if (tuning.shakeFrames && tuning.shakeCycles) {
+      dest[0] = tuning.shakeCycles;
+      dest[1] = phaseCode(row ? 1 : 0, tuning.shakeFrames);
+      dest[2] = phaseCode(row ? 2 : 0, tuning.shakeFrames);
+      dest[5] = dest[6] = 1;
+      offset += 7;
+    }
+    if (tuning.whiteReference) {
+      dest[offset] = dest[offset + 5] = dest[offset + 6] = 1;
+      // Balance the added white reference with an equal common dark pulse.
+      dest[offset + 1] = phaseCode(row ? 1 : 0, tuning.whiteReference);
+      dest[offset + 2] = phaseCode(row ? 2 : 0, tuning.whiteReference);
+      offset += 7;
+    }
+    for (size_t byte = 0; byte < 14; ++byte) dest[offset + byte] = factory[row][byte];
+    dest[offset + 1] = phaseCode(away, adjustedInverse);
+    dest[offset + 2] = phaseCode(0, adjustedPause);
+    dest[offset + 3] = phaseCode(toward, adjustedFirst);
+  }
+  return true;
+}
+
 static_assert(pulse(Pulse{})[2] == 0x84, "candidate must follow prefix");
 static_assert(pulse(Pulse{2, 4, 6, 1, 1})[1] == 0x46, "darkening prefix first");
 static_assert(!Pulse{1, 64, 0, 1, 0}.valid(), "phase overflow must fail");

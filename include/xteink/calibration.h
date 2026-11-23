@@ -4,6 +4,8 @@
 #include "waveform_inspection.h"
 #include "test_image.h"
 
+#include <optional>
+
 namespace x4render {
 // Display-independent diagnostic layout. All drawing is into two reusable
 // packed WIRE planes; nothing may mutate them while the transport is busy.
@@ -34,6 +36,7 @@ class Calibration {
       {{2, 2, 0, 1, 1}, {2, 4, 0, 1, 1}, {2, 6, 0, 1, 1}}};
   uint8_t holdRail{0};
   BwPreparation bwPreparation{};
+  std::optional<LutBank> factoryDerivedBw{};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
   bool start(uint32_t now, bool prepare = true, bool rotate = false,
@@ -309,13 +312,17 @@ class Calibration {
     text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
     text(18, 43, "OPPOSITE FIRST - THEN A B C");
     if (bwPreparation.programmable) {
-      text(18, 65, "BW F", 1);
-      number(43, 62, bwPreparation.frames);
-      text(18, 85, "BW I", 1);
-      number(43, 82, bwPreparation.inversionFrames);
-      text(88, 65, "R", 1);
-      number(99, 62, bwPreparation.repeats);
-      if (bwPreparation.conditioned) text(150, 65, "COND", 1);
+      if (factoryDerivedBw) {
+        text(18, 65, "BW MTP", 1);
+      } else {
+        text(18, 65, "BW F", 1);
+        number(43, 62, bwPreparation.frames);
+        text(18, 85, "BW I", 1);
+        number(43, 82, bwPreparation.inversionFrames);
+        text(88, 65, "R", 1);
+        number(99, 62, bwPreparation.repeats);
+        if (bwPreparation.conditioned) text(150, 65, "COND", 1);
+      }
     } else
       text(18, 65, "BW OTP", 1);
     for (uint8_t c = 0; c < 3; ++c) {
@@ -372,7 +379,8 @@ class Calibration {
     }
     bool activated;
     if (bwPreparation.programmable) {
-      const auto bank = preparation(bwPreparation, holdRail);
+      const auto bank = factoryDerivedBw ? *factoryDerivedBw
+                                         : preparation(bwPreparation, holdRail);
       activated = transport_.activate(bank, {0, 0, 800, 480}, false, now, true);
       if (activated) {
         preparationBank_ = bank;

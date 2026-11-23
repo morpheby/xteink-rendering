@@ -121,6 +121,26 @@ int main() {
           }
   c.activationFrames = 9;
   assert(preparation(c) == LutBank{});
+  const LutBank factory{{
+      Lut{1,0x19,4,0x0e,0x0b,1,1,1,0x0b,0,0,0,1,1},
+      Lut{1,0x59,4,0x8e,0x8b,1,1,1,0x0b,0,0,0,1,1},
+      Lut{1,0x59,4,0x8e,0x8b,1,1,1,0x0b,0,0,0,1,1},
+      Lut{1,0x99,4,0x4e,0x0b,1,1,1,0x4b,0,0,0,1,1},
+      Lut{1,0x99,4,0x4e,0x0b,1,1,1,0x4b,0,0,0,1,1},
+  }};
+  LutBank tuned{};
+  assert(tuneFactoryBw(factory, {}, tuned) && tuned == factory);
+  FactoryBwTuning add{2, 2, 6, 3, -1};
+  assert(tuneFactoryBw(factory, add, tuned));
+  for (auto row : tuned) assert(counts(row) == 65 + 8 + 12 + 6 - 1);
+  assert(tuned[1][1] == 0x42 && tuned[1][2] == 0x82);
+  assert(tuned[1][8] == 0x46 && tuned[1][9] == 0x86);
+  assert(tuned[1][15] == 0x5c && tuned[1][16] == 3 && tuned[1][17] == 0x91);
+  assert(tuned[1][18] == 0x8b && tuned[1][22] == 0x0b);
+  assert(tuned[3][18] == 0x0b && tuned[3][22] == 0x4b);
+  auto invalid = factory;
+  invalid[4][8] = 0x8b;
+  assert(!tuneFactoryBw(invalid, {}, tuned));
   std::cout << "waveform: opposite-first bytes, binary/hex inspection, aligned "
                "repeats and programmable B/W passed\n";
 }

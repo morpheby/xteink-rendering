@@ -95,6 +95,12 @@ int main() {
   assert(completePalette.calibrated && completePalette.count == 8);
   assert(x4render::relativeShadeId(completePalette.shades[2]) == 3);
   assert(!x4render::measuredRelativePalette({{35, 35, 0, 0, 0, 0}}, linear).calibrated);
+  x4render::Settings stableSettings;
+  stableSettings.mode = x4render::Mode::SingleSettle;
+  stableSettings.palette = x4render::measuredStablePalette({{120, 60, 200}});
+  assert(stableSettings.palette.calibrated);
+  assert(x4render::quantize(71, 0, 0, stableSettings).selector == 2);
+  assert(x4render::quantize(71, 1, 0, stableSettings).selector == 2);
 
   Fake t;
   x4render::Calibration<Fake> lab(t);
@@ -816,6 +822,26 @@ int main() {
     }
     assert(seen == 0x0f);
   }
+
+  const std::array<uint8_t, 3> counts{{3, 7, 12}};
+  // Align the simulated VCOM phases to the source reset phases.
+  auto stableSource = source;
+  for (size_t phase = 1; phase <= 4; ++phase)
+    stableSource[0][phase] = stableSource[x4render::Row[2]][phase] & 63;
+  texture.factoryDerivedBw = stableSource;
+  x4render::LutBank stable{};
+  assert(x4render::stableGrayBank(stableSource, counts, stable));
+  assert(!texture.startStable(160, counts, false));
+  assert(texture.startStable(160, counts, true));
+  assert(!texture.poll(161) && texture.stableChart());
+  assert(textureTransport.banks.back() == stable);
+  assert(texture.poll(162) && texture.programmedHoldRail() == 0);
+  const auto stableUploads = textureTransport.uploads.size();
+  assert(!texture.startStable(163, {{4, 7, 12}}, false));
+  assert(texture.startStable(164, counts, false, true));
+  assert(texture.poll(165) && texture.programmedRotation() == 1);
+  assert(textureTransport.uploads.size() == stableUploads + 2);
+  assert(textureTransport.banks.back() == stable);
 
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));

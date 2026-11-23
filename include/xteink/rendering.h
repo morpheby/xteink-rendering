@@ -186,8 +186,13 @@ inline ShadeMix quantizeMix(uint8_t luma, const Settings& s) {
   }
   for (uint8_t i = 1; i < s.palette.count; ++i) {
     const auto a = s.palette.shades[i - 1], b = s.palette.shades[i];
-    if (luma <= b.luma)
+    if (luma <= b.luma) {
+      if (s.mode == Mode::SingleSettle) {
+        const auto nearest = luma - a.luma > b.luma - luma ? b : a;
+        return {nearest, nearest, 0};
+      }
       return {a, b, coverageCount(luma - a.luma, b.luma - a.luma, s.palette.coverage[i - 1])};
+    }
   }
   const auto last = s.palette.shades[s.palette.count - 1];
   return {last, last, 0};
@@ -309,13 +314,9 @@ class Frames {
       for (uint16_t x = 0; x < Width; ++x) {
         const size_t i = size_t(y) * Width + x;
         const auto q = quantize(target[i], x, y, current);
-        // Raw selector 00=hold, 01=black, 10=white for absolute preparation.
-        uint8_t selector =
-            packedBit(mask, i)
-                ? uint8_t(q.selector && current.mode == Mode::SingleSettle ? 2
-                          : q.base                                         ? 2
-                                                                           : 1)
-                : 0;
+        // Logical preparation selectors. A transport maps these endpoints
+        // to the corresponding rows of its B/W waveform bank.
+        const uint8_t selector = packedBit(mask, i) ? uint8_t(q.base ? 2 : 1) : 0;
         packedBit(dtm1, i, selector & 2);
         packedBit(dtm2, i, selector & 1);
       }

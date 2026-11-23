@@ -65,6 +65,22 @@ class Calibration {
     return startOperation(now, prepare, rotate, conditioning,
                           TestImage::Calibration, 0);
   }
+  bool startStable(uint32_t now, const std::array<uint8_t, 3>& frames, bool rebuild, bool rotate = false) {
+    if (busy()) return false;
+    LutBank bank;
+    if (!bwPreparation.programmable || !factoryDerivedBw || !stableGrayBank(*factoryDerivedBw, frames, bank)) {
+      result_ = "stable gray needs Factory Tuned or Replay and valid counts";
+      return false;
+    }
+    if (!rebuild && (!stableChart_ || !references_ || bank != stableBank_)) {
+      result_ = "rebuild stable gray chart before repeat";
+      return false;
+    }
+    stableBank_ = bank;
+    stableFrames_ = frames;
+    return startOperation(now, rebuild, rotate, false, TestImage::Calibration, 0, true);
+  }
+  bool stableChart() const { return stableChart_; }
   // LoadStrip takes a width, SplitCheckerboard a per-rail budget, and random
   // artwork a seed. Repeat Image replays the same argument.
   bool startImage(uint32_t now, TestImage image, uint32_t argument = 0) {
@@ -104,11 +120,12 @@ class Calibration {
 
  private:
   bool startOperation(uint32_t now, bool prepare, bool rotate, bool conditioning,
-                      TestImage image, uint32_t argument) {
+                      TestImage image, uint32_t argument, bool stable = false) {
     if (busy() || !first_.data() || !bwPreparation.valid() || holdRail > 3)
       return false;
-    for (auto p : parameters)
-      if (!p.valid() || p.repeats != parameters[0].repeats) return false;
+    if (!stable)
+      for (auto p : parameters)
+        if (!p.valid() || p.repeats != parameters[0].repeats) return false;
     conditioning_ = conditioning;
     image_ = image;
     imageArgument_ = argument;
@@ -122,7 +139,8 @@ class Calibration {
     requestedBwLoad_ = renderedBwLoad_ = {};
     bwCharge_ = {};
     pauseMs_ = bwPreparation.pauseMs;
-    prepare_ = prepare || !references_;
+    prepare_ = prepare || !references_ || stableChart_ != stable;
+    stableChart_ = stable;
     if (conditioning) prepare_ = false;
     started_ = now;
     uploaded_ = 0;
@@ -495,8 +513,8 @@ class Calibration {
         text(10, 467, "ANSEL ADAMS - NARA 519904", 1);
       }
     } else {
-    text(18, 12, "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
-    text(18, 43, "OPPOSITE FIRST - THEN A B C");
+    text(18, 12, stableChart_ ? "STABLE GRAY CANDIDATES" : "X4 WAVEFORM LAB - EXPERIMENTAL", 3);
+    text(18, 43, stableChart_ ? "FACTORY BLACK RESET THEN LIGHTEN" : "OPPOSITE FIRST - THEN A B C");
     if (bwPreparation.programmable) {
       if (factoryDerivedBw) {
         text(18, 65, "BW MTP", 1);
@@ -513,12 +531,16 @@ class Calibration {
       text(18, 65, "BW OTP", 1);
     for (uint8_t c = 0; c < 3; ++c) {
       uint16_t x = uint16_t(130 + c * 215 + (c == 2 ? 12 : 0));
-      char label[2] = {char('A' + c), 0};
+      const char label[] = {stableChart_ ? 'G' : char('A' + c), stableChart_ ? char('1' + c) : char(0), 0};
       text(x + 75, 72, label, 3);
       rect(second_, {x, 110, 190, 90}, false);
       text(x, 207, "BLACK START");
       text(x, 337, "WHITE START");
       text(x, 360, "F");
+      if (stableChart_) {
+        number(x + 15, 360, stableFrames_[c]);
+        continue;
+      }
       number(x + 15, 360, parameters[c].frames);
       text(x + 65, 360, "R");
       number(x + 80, 360, parameters[c].repeats);
@@ -822,7 +844,7 @@ class Calibration {
                           ? expanded
                           : Rect{0, 0, 800, 480};
     if (!upload(uploadRect)) return fail();
-    const auto bank = candidates(parameters, holdRail);
+    const auto bank = stableChart_ ? stableBank_ : candidates(parameters, holdRail);
     const Rect activation = !fullImage && verticalWindowValidated
                                 ? expanded : Rect{0, 0, 800, 480};
     if (!transport_.activate(bank, {0, activation.y, 800, activation.height},
@@ -832,13 +854,13 @@ class Calibration {
     settleBank_ = bank;
     settleValid_ = true;
     programmedRotation_ = rotation_;
-    programmedHoldRail_ = holdRail;
+    programmedHoldRail_ = stableChart_ ? 0 : holdRail;
     ++waveformId_;
     lastActivation_ = !fullImage && verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
     job_ = conditioning_ ? Job::Conditioning : Job::Settle;
     return true;
   }
-  LutBank settleBank_{}, preparationBank_{};
+  LutBank settleBank_{}, preparationBank_{}, stableBank_{};
   bool settleValid_{false}, preparationValid_{false},
       factoryPreparation_{false};
   uint8_t programmedRotation_{0}, programmedHoldRail_{0};
@@ -848,6 +870,8 @@ class Calibration {
   Buffer first_, second_, splitTarget_, grayMixGroups_;
   Job job_{Job::Idle};
   bool references_{false}, prepare_{true}, conditioning_{false};
+  bool stableChart_{false};
+  std::array<uint8_t, 3> stableFrames_{};
   bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
   uint32_t imageArgument_{0}, baseCompleted_{0};

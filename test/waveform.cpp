@@ -138,6 +138,16 @@ int main() {
   assert(tuned[1][15] == 0x5c && tuned[1][16] == 3 && tuned[1][17] == 0x91);
   assert(tuned[1][18] == 0x8b && tuned[1][22] == 0x0b);
   assert(tuned[3][18] == 0x0b && tuned[3][22] == 0x4b);
+  LutBank stable{};
+  assert(stableGrayBank(tuned, {{3, 7, 12}}, stable));
+  assert(stable[0] == stable[Row[0]]);
+  for (uint8_t i = 1; i <= 3; ++i) {
+    const auto& row = stable[Row[i]];
+    for (size_t byte = 0; byte < 28; ++byte) assert(row[byte] == tuned[Row[2]][byte]);
+    assert((row[29] >> 6) == 2 && (row[30] >> 6) == 0);
+    assert(counts(row) == counts(stable[0]));
+  }
+  assert(!stableGrayBank(tuned, {{3, 7, 31}}, stable));
   auto invalid = factory;
   invalid[4][8] = 0x8b;
   assert(!tuneFactoryBw(invalid, {}, tuned));

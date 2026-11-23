@@ -225,6 +225,42 @@ constexpr bool tuneFactoryBw(const LutBank& factory, FactoryBwTuning tuning, Lut
   return true;
 }
 
+// Start from the verified black endpoint, then lighten by the specified
+// counts in the same activation. Outside the target mask, match VCOM.
+constexpr bool stableGrayBank(const LutBank& tunedBw, const std::array<uint8_t, 3>& frames,
+                              LutBank& result) {
+  uint8_t longest = 0;
+  for (const auto n : frames) {
+    if (!n || n > 30) return false;
+    if (n > longest) longest = n;
+  }
+  const auto& vcom = tunedBw[0];
+  const auto& black = tunedBw[Row[2]];
+  size_t end = 0;
+  while (end < vcom.size() && vcom[end]) {
+    if (black[end] != vcom[end] || black[end + 5] != vcom[end + 5] ||
+        black[end + 6] != vcom[end + 6]) return false;
+    for (size_t i = 1; i <= 4; ++i)
+      if ((black[end + i] & 63) != vcom[end + i]) return false;
+    end += 7;
+  }
+  if (!end || end + 7 > vcom.size()) return false;
+  for (size_t i = end; i < vcom.size(); ++i)
+    if (vcom[i] || black[i]) return false;
+  Lut heldRow = vcom;
+  heldRow[end] = heldRow[end+5] = heldRow[end+6] = 1;
+  heldRow[end+1] = phaseCode(0, longest + 2);
+  result[0] = result[Row[0]] = heldRow;
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto& row = result[Row[i+1]];
+    row = black;
+    row[end] = row[end+5] = row[end+6] = 1;
+    row[end+1] = phaseCode(2, frames[i]);
+    row[end+2] = phaseCode(0, longest + 2 - frames[i]);
+  }
+  return true;
+}
+
 static_assert(pulse(Pulse{})[2] == 0x84, "candidate must follow prefix");
 static_assert(pulse(Pulse{2, 4, 6, 1, 1})[1] == 0x46, "darkening prefix first");
 static_assert(!Pulse{1, 64, 0, 1, 0}.valid(), "phase overflow must fail");

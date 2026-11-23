@@ -76,4 +76,15 @@ inline Palette measuredRelativePalette(const std::array<uint8_t, 6>& luminance,
                                        const std::array<CoverageCurve, 7>& coverage) {
   return RelativeGrayProfile{luminance, coverage}.palette();
 }
+
+inline Palette measuredStablePalette(const std::array<uint8_t, 3>& luminance) {
+  Palette palette;
+  palette.count = 5;
+  for (uint8_t i = 0; i < 3; ++i) palette.shades[i+1] = {luminance[i], 0, uint8_t(i + 1)};
+  std::sort(palette.shades.begin()+1, palette.shades.begin()+4,
+            [](const auto& a, const auto& b) { return a.luma < b.luma; });
+  palette.shades[4] = {255, 1, 0};
+  palette.calibrated = palette.valid();
+  return palette;
+}
 }  // namespace x4render

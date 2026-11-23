@@ -77,6 +77,7 @@ class GrayRefresh {
   }
   uint8_t preparationPasses() const { return zones_[0].count; }
   uint8_t settlePasses() const { return zones_[1].count; }
+  bool finishesPreparationWithHold() const { return preparationPasses() > 1; }
 
   template <class Transport>
   bool start(Transport& transport, uint32_t now) {
@@ -93,7 +94,7 @@ class GrayRefresh {
     if (stage == Stage::PowerOn) stage = Stage::Prepare;
     if (stage == Stage::Prepare) {
       if (runPass(transport, now, false)) return stage == Stage::Failed;
-      if (zones_[0].count > 1 && zones_[1].count && frames_.current.mode == Mode::DitherSettle) {
+      if (finishesPreparationWithHold()) {
         frames_.dtm1.clear();
         frames_.dtm2.clear();
         stage = Stage::Hold;

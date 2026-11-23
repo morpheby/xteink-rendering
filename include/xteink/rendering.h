@@ -238,6 +238,32 @@ class Frames {
            phase == Phase::Prepared || phase == Phase::Settling;
   }
   bool plan(Settings settings, bool force = false) {
+    return planFrame(settings, force, false);
+  }
+  bool planPreview(uint8_t margin) {
+    if (busy() || knowledge != Knowledge::Known || !previewMask_.allocate(PlaneBytes) ||
+        !previewWhite_.allocate(PlaneBytes)) return false;
+    Settings bw;
+    bw.margin = margin;
+    return planFrame(bw, false, true);
+  }
+  bool hasPreview() const { return hasPreview_; }
+  bool commitPreview() {
+    if (phase != Phase::Settling || current.mode != Mode::BwDither || !previewMask_.data()) return false;
+    for (uint16_t y = expanded.y; y < expanded.y + expanded.height; ++y)
+      for (uint16_t x = expanded.x; x < expanded.x + expanded.width; ++x) {
+        const size_t i = size_t(y) * Width + x;
+        if (!packedBit(mask, i)) continue;
+        packedBit(previewMask_, i, true);
+        packedBit(previewWhite_, i, quantize(target[i], x, y, current).base);
+      }
+    hasPreview_ = true;
+    phase = Phase::Complete;
+    return true;
+  }
+
+ private:
+  bool planFrame(Settings settings, bool force, bool preview) {
     if (busy() || !target.data() || !settings.palette.valid() ||
         (settings.mode != Mode::BwDither && !settings.palette.calibrated))
       return false;
@@ -246,8 +272,8 @@ class Frames {
     requested = {};
     expanded = {};
     driven = 0;
-    const bool resync =
-        force || knowledge != Knowledge::Known || !current.equivalent(previous);
+    const bool resync = !preview &&
+        (force || knowledge != Knowledge::Known || !current.equivalent(previous));
     std::array<ShadeMix, 256> previousMix, currentMix;
     for (size_t i = 0; i < currentMix.size(); ++i) {
       previousMix[i] = quantizeMix(i, previous);
@@ -256,11 +282,16 @@ class Frames {
     for (uint16_t y = 0; y < Height; ++y)
       for (uint16_t x = 0; x < Width; ++x) {
         const size_t i = size_t(y) * Width + x;
-        if (resync || !same(previousMix[displayed[i]].sample(x, y, previous.columnDither),
-                            currentMix[target[i]].sample(x, y, current.columnDither))) {
-          packedBit(mask, i, true);
-          requested.include(x, y);
+        const bool wasPreview = hasPreview_ && packedBit(previewMask_, i);
+        if (preview && !wasPreview && displayed[i] == target[i]) continue;
+        if (!resync && (preview || !wasPreview)) {
+          const auto old = wasPreview
+              ? Shade{0, uint8_t(packedBit(previewWhite_, i)), 0}
+              : previousMix[displayed[i]].sample(x, y, previous.columnDither);
+          if (same(old, currentMix[target[i]].sample(x, y, current.columnDither))) continue;
         }
+        packedBit(mask, i, true);
+        requested.include(x, y);
       }
     // Margin includes only a small user-selected neighborhood; full-line
     // padding never broadens this drive mask.
@@ -312,6 +343,8 @@ class Frames {
     phase = driven ? Phase::Planned : Phase::Complete;
     return true;
   }
+
+ public:
   void preparation() {
     dtm1.clear();
     dtm2.clear();
@@ -364,6 +397,7 @@ class Frames {
       return false;
     std::memcpy(displayed.data(), target.data(), Pixels);
     previous = current;
+    clearPreview();
     phase = Phase::Complete;
     knowledge = Knowledge::Known;
     return true;
@@ -375,6 +409,7 @@ class Frames {
   void resetController() {
     phase = Phase::Idle;
     knowledge = Knowledge::Unknown;
+    clearPreview();
   }
   Buffer displayed, target, mask, dtm1, dtm2;
   Settings previous{}, current{};
@@ -382,5 +417,14 @@ class Frames {
   Phase phase{Phase::Idle};
   Rect requested{}, expanded{};
   uint32_t driven{0};
+
+ private:
+  void clearPreview() {
+    if (hasPreview_) previewMask_.clear();
+    hasPreview_ = false;
+  }
+  // Preview pixels hold B/W independently of the last complete gray frame.
+  Buffer previewMask_, previewWhite_;
+  bool hasPreview_{false};
 };
 }  // namespace x4render

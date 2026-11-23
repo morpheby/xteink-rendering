@@ -76,6 +76,35 @@ int main() {
       finish(padded);
     }
   }
+  for (const auto mode : {Mode::SingleSettle, Mode::DitherSettle}) {
+    Frames interactive;
+    const auto settings = gray(mode);
+    constexpr size_t touched = 6 * Width + 10, nearby = touched + 1, far = touched + 80;
+    assert(interactive.allocate());
+    interactive.draw(touched, 120);
+    interactive.draw(nearby, 120);
+    interactive.draw(far, 120);
+    assert(interactive.plan(settings));
+    finish(interactive);
+    assert(interactive.planPreview(1) && !interactive.driven);
+    interactive.draw(touched, 0);
+    assert(interactive.planPreview(1) && interactive.driven == 9);
+    interactive.preparation();
+    assert(interactive.prepared(true) && interactive.settle() && interactive.commitPreview());
+    assert(interactive.hasPreview() && interactive.displayed[touched] == 120);
+    assert(interactive.previous.mode == mode);
+    assert(interactive.planPreview(1) && !interactive.driven);
+    interactive.draw(touched, 255);
+    assert(interactive.planPreview(0) && interactive.driven == 1);
+    interactive.preparation();
+    assert(interactive.prepared(true) && interactive.settle() && interactive.commitPreview());
+    interactive.draw(touched, 120);  // Final logical state matches the old gray frame.
+    assert(interactive.plan(settings) && interactive.driven == 9);
+    assert(packedBit(interactive.mask, touched) && packedBit(interactive.mask, nearby));
+    assert(!packedBit(interactive.mask, far));
+    finish(interactive);
+    assert(!interactive.hasPreview() && interactive.plan(settings) && !interactive.driven);
+  }
   auto s = gray(Mode::DitherSettle);
   assert(s.palette.valid());
   assert(f.plan(s));

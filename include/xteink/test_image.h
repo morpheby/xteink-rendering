@@ -259,6 +259,36 @@ inline Palette provisionalRelativePalette() {
   return palette;
 }
 
+inline Palette measuredRelativePalette(const std::array<uint8_t, 6>& luminance,
+                                       const std::array<CoverageCurve, 7>& coverage) {
+  std::array<uint8_t, 6> order{{1, 2, 3, 4, 5, 6}};
+  std::sort(order.begin(), order.end(), [&](uint8_t a, uint8_t b) {
+    return luminance[a - 1] < luminance[b - 1];
+  });
+  Palette palette;
+  palette.count = 1;
+  for (const auto id : order) {
+    const auto luma = luminance[id - 1];
+    if (luma) palette.shades[palette.count++] = relativeShade(id, luma);
+  }
+  palette.shades[palette.count++] = relativeShade(7, 255);
+  palette.coverage = coverage;
+  palette.calibrated = palette.count > 2 && palette.valid();
+  return palette;
+}
+
+inline std::array<Shade, 2> relativeRampEndpoints(const Palette& palette) {
+  std::array<Shade, 2> ends{{palette.shades[0], palette.shades[palette.count - 1]}};
+  for (uint8_t i = 1; i + 1 < palette.count; ++i) {
+    const auto shade = palette.shades[i];
+    if (relativeShadeId(shade) == 1) ends[0] = shade;
+    if (relativeShadeId(shade) == 6) ends[1] = shade;
+  }
+  if (ends[0].luma >= ends[1].luma)
+    return {palette.shades[0], palette.shades[palette.count - 1]};
+  return ends;
+}
+
 // Identical coordinates and quantizer for both passes. Each emitted shade
 // carries its B/W starting pixel AND the matching settle selector.
 template <class Emit>
@@ -294,12 +324,8 @@ void paintRelativeMixes(TestImage image, uint32_t seed, const Settings& settings
     case TestImage::LinearRamp:
     case TestImage::RampBase:
     case TestImage::RampInverse: {
-      uint8_t left = 0, right = 255;
-      for (uint8_t i = 0; i < settings.palette.count; ++i) {
-        const auto shade = settings.palette.shades[i];
-        if (relativeShadeId(shade) == 1) left = shade.luma;
-        if (relativeShadeId(shade) == 6) right = shade.luma;
-      }
+      const auto ends = relativeRampEndpoints(settings.palette);
+      const auto left = ends[0].luma, right = ends[1].luma;
       Settings bw;
       for (uint16_t x = 0; x < Width; ++x) {
         const uint8_t luma = uint8_t((unsigned(left) * (Width - 1 - x) +

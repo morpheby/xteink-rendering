@@ -456,7 +456,11 @@ class Calibration {
       if (grayPreparationImage(image_) && !paintGrayBase()) return fail();
       if (image_ == TestImage::NeighborSweep) shadeChartLabels();
       if (isRampImage(image_)) {
-        text(10, 8, "A BLACK TO C WHITE - LINEAR INPUT RAMP", 2);
+        const auto ends = relativeRampEndpoints(imagePalette);
+        char title[54];
+        std::snprintf(title, sizeof(title), "%s TO %s - LINEAR INPUT RAMP",
+                      shadeLabel(relativeShadeId(ends[0])), shadeLabel(relativeShadeId(ends[1])));
+        text(10, 8, title, 2);
         text(10, 32, imagePalette.calibrated ? "MEASURED PALETTE" : "PROVISIONAL PALETTE", 1);
         text(10, 57, "NEIGHBOR GRAY DITHER", 2);
         text(10, 260, "B-W DITHER - SAME INPUT LEVELS", 2);

@@ -77,6 +77,18 @@ bool pixel(const std::vector<uint8_t>& p, int x, int y) {
   return p[i / 8] & (0x80u >> (i % 8));
 }
 int main() {
+  const std::array<x4render::CoverageCurve, 7> linear{};
+  const auto measured = x4render::measuredRelativePalette({{35, 108, 187, 206, 0, 0}}, linear);
+  assert(measured.calibrated && measured.count == 6);
+  assert(x4render::relativeShadeId(measured.shades[4]) == 4);
+  assert(x4render::relativeShadeId(measured.shades[5]) == 7);
+  const auto ends = x4render::relativeRampEndpoints(measured);
+  assert(ends[0].luma == 35 && ends[1].luma == 255);
+  const auto completePalette = x4render::measuredRelativePalette({{10, 70, 30, 100, 180, 240}}, linear);
+  assert(completePalette.calibrated && completePalette.count == 8);
+  assert(x4render::relativeShadeId(completePalette.shades[2]) == 3);
+  assert(!x4render::measuredRelativePalette({{35, 35, 0, 0, 0, 0}}, linear).calibrated);
+
   Fake t;
   x4render::Calibration<Fake> lab(t);
   assert(lab.allocate());

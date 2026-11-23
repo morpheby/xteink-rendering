@@ -82,11 +82,16 @@ enum class Phase : uint8_t {
 struct Shade {
   uint8_t luma, base, selector;
 };
+// Optical progress from the darker endpoint (0) to the lighter one (255)
+// at each of the 17 Bayer coverage counts. All zero means a linear pair.
+// Equal interior values allow visually redundant coverage counts to collapse.
+using CoverageCurve = std::array<uint8_t, 17>;
 struct Palette {
   std::array<Shade, 8> shades{{{0, 0, 0}, {255, 1, 0}}};
   uint8_t count{2};
   uint32_t revision{0};
   bool calibrated{false};
+  std::array<CoverageCurve, 7> coverage{};
   bool valid() const {
     if (count < 2 || count > 8 || shades[0].luma != 0 ||
         shades[count - 1].luma != 255)
@@ -95,6 +100,16 @@ struct Palette {
       if (shades[i].base > 1 || shades[i].selector > 3 ||
           (i && shades[i - 1].luma >= shades[i].luma))
         return false;
+      if (i) {
+        const auto& curve = coverage[i - 1];
+        if (curve.back() == 0) {
+          if (std::any_of(curve.begin(), curve.end(), [](uint8_t v) { return v != 0; }))
+            return false;
+        } else if (curve.front() != 0 || curve.back() != 255 ||
+                   !std::is_sorted(curve.begin(), curve.end())) {
+          return false;
+        }
+      }
     }
     return shades[0].base == 0 && shades[0].selector == 0 &&
            shades[count - 1].base == 1 && shades[count - 1].selector == 0;
@@ -106,7 +121,7 @@ struct Settings {
   uint8_t margin{0};
   bool equivalent(const Settings& b) const {
     if (mode != b.mode || palette.revision != b.palette.revision ||
-        palette.count != b.palette.count)
+        palette.count != b.palette.count || palette.coverage != b.palette.coverage)
       return false;
     for (uint8_t i = 0; i < palette.count; ++i)
       if (palette.shades[i].luma != b.palette.shades[i].luma ||
@@ -118,16 +133,42 @@ struct Settings {
 };
 constexpr uint8_t Bayer[16] = {0, 8,  2, 10, 12, 4, 14, 6,
                                3, 11, 1, 9,  15, 7, 13, 5};
+constexpr uint8_t bayerRank(uint16_t x, uint16_t y) {
+  return Bayer[(y % 4) * 4 + x % 4];
+}
+constexpr Shade mixNeighbors(Shade dark, Shade light, uint8_t lightCount,
+                             uint16_t x, uint16_t y) {
+  return bayerRank(x, y) < lightCount ? light : dark;
+}
+inline uint8_t coverageCount(unsigned distance, unsigned interval, const CoverageCurve& curve) {
+  if (!distance) return 0;
+  if (distance >= interval) return 16;
+  if (!curve.back())
+    return uint8_t((32 * distance + interval - 1) / (2 * interval));
+  // Compare in the original interval's units. Avoid rounding the normalized
+  // target before finding the closest optically measured coverage step.
+  const int desired = int(255 * distance);
+  uint8_t nearest = 0;
+  int error = desired;
+  for (uint8_t i = 1; i <= 16; ++i) {
+    const int next = std::abs(int(curve[i] * interval) - desired);
+    if (next < error) {
+      nearest = i;
+      error = next;
+    }
+  }
+  return nearest;
+}
 inline Shade quantize(uint8_t luma, uint16_t x, uint16_t y, const Settings& s) {
-  const uint16_t threshold = 2 * Bayer[(y % 4) * 4 + x % 4] + 1;
-  if (s.mode == Mode::BwDither)
-    return {uint8_t(uint16_t(luma) * 32 > threshold * 255 ? 255 : 0),
-            uint8_t(uint16_t(luma) * 32 > threshold * 255), 0};
+  if (s.mode == Mode::BwDither) {
+    const bool white = unsigned(luma) * 32 > unsigned(2 * bayerRank(x, y) + 1) * 255;
+    return {uint8_t(white ? 255 : 0), uint8_t(white), 0};
+  }
   for (uint8_t i = 1; i < s.palette.count; ++i) {
     const auto a = s.palette.shades[i - 1], b = s.palette.shades[i];
     if (luma <= b.luma)
-      return uint16_t(luma - a.luma) * 32 > threshold * (b.luma - a.luma) ? b
-                                                                          : a;
+      return mixNeighbors(a, b, coverageCount(luma - a.luma, b.luma - a.luma,
+                                               s.palette.coverage[i - 1]), x, y);
   }
   return s.palette.shades[s.palette.count - 1];
 }

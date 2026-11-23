@@ -36,6 +36,7 @@ class Calibration {
       {{2, 2, 0, 1, 1}, {2, 4, 0, 1, 1}, {2, 6, 0, 1, 1}}};
   uint8_t holdRail{0};
   BwPreparation bwPreparation{};
+  Palette imagePalette = provisionalRelativePalette();
   std::optional<LutBank> factoryDerivedBw{};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
@@ -45,7 +46,7 @@ class Calibration {
                           TestImage::Calibration, 0);
   }
   bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
-    if (image < TestImage::White || image > TestImage::LandscapeGray) return false;
+    if (image < TestImage::White || image > TestImage::LinearRamp) return false;
     return startOperation(now, true, false, false, image, seed);
   }
   TestImage image() const { return image_; }
@@ -125,7 +126,7 @@ class Calibration {
     if (job_ == Job::Base) {
       if (factoryPreparation_) otpPrimed_ = true;
       prepare_ = false;
-      if (image_ != TestImage::Calibration && image_ != TestImage::LandscapeGray)
+      if (image_ != TestImage::Calibration && !usesRelativeGray(image_))
         return complete(now, false);
       if (pauseMs_) {
         baseCompleted_ = now;
@@ -288,6 +289,28 @@ class Calibration {
                      char('0' + n % 10), 0};
     text(x, y, chars);
   }
+  Settings imageSettings() const {
+    Settings settings;
+    settings.mode = Mode::DitherSettle;
+    settings.palette = imagePalette;
+    return settings;
+  }
+  void shadeChartLabels() {
+    text(8, 3, "NEIGHBOR MIXES - STEP IS LIGHTER PIXELS PER 16", 2);
+    text(8, 19, imagePalette.calibrated ? "RAW REFERENCES" : "RAW REFERENCES - PROVISIONAL ORDER", 1);
+    for (uint8_t i = 0; i < 8; ++i) text(i * 100 + 7, 58, shadeLabel(i), 1);
+    for (uint8_t step = 0; step <= 16; ++step) {
+      char label[3]{char('0' + step / 10), char('0' + step % 10), 0};
+      text((neighborColumn(step) + neighborColumn(step + 1)) / 2 - 6, 69, label, 1);
+    }
+    for (uint8_t i = 0; i + 1 < imagePalette.count; ++i) {
+      char label[48];
+      std::snprintf(label, sizeof(label), "%u - %s TO %s", unsigned(i + 1),
+                    shadeLabel(relativeShadeId(imagePalette.shades[i])),
+                    shadeLabel(relativeShadeId(imagePalette.shades[i + 1])));
+      text(8, NeighborTop + i * NeighborRowHeight + NeighborSwatchHeight + 2, label, 1);
+    }
+  }
   bool beginPass(uint32_t now) {
     if (!prepare_) return beginSettle(now);
     references_ = false;
@@ -295,6 +318,19 @@ class Calibration {
     second_.clear(255);
     if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, seed_);
+      if (usesRelativeGray(image_)) {
+        if (!imagePalette.valid()) return fail();
+        paintRelativeShades(image_, seed_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
+          packedBit(second_, size_t(y) * Width + x, shade.base);
+        });
+      }
+      if (image_ == TestImage::NeighborSweep) shadeChartLabels();
+      if (image_ == TestImage::LinearRamp) {
+        text(10, 8, "A BLACK TO C WHITE - LINEAR INPUT RAMP", 2);
+        text(10, 32, imagePalette.calibrated ? "MEASURED PALETTE" : "PROVISIONAL PALETTE", 1);
+        text(10, 57, "NEIGHBOR GRAY DITHER", 2);
+        text(10, 260, "B-W DITHER - SAME INPUT LEVELS", 2);
+      }
       if (image_ == TestImage::Reference || image_ == TestImage::Random) {
         text(20, 12, image_ == TestImage::Reference ? "X4 KNOWN REFERENCE"
                                                  : "X4 RANDOM EDGES", 3);
@@ -304,7 +340,7 @@ class Calibration {
       }
       if (image_ == TestImage::LandscapeDither || image_ == TestImage::LandscapeGray) {
         text(10, 4, image_ == TestImage::LandscapeGray
-                         ? "LANDSCAPE - GRAY TRIAL - UNMEASURED TONES"
+                         ? "LANDSCAPE - DITHER THEN SETTLE"
                          : "LANDSCAPE - B-W DITHER", 1);
         text(10, 467, "ANSEL ADAMS - NARA 519904", 1);
       }
@@ -330,17 +366,6 @@ class Calibration {
       char label[2] = {char('A' + c), 0};
       text(x + 75, 72, label, 3);
       rect(second_, {x, 110, 190, 90}, false);
-      // Bottom 15 rows compare deterministic B/W ramps under each relative
-      // waveform; the upper 75 rows remain pure B or W starts.
-      Settings bw;
-      for (uint16_t dx = 0; dx < 190; ++dx)
-        for (uint16_t dy = 0; dy < 15; ++dy) {
-          const uint8_t luma = uint8_t(uint32_t(dx) * 255 / 189);
-          packedBit(second_, size_t(185 + dy) * Width + x + dx,
-                    quantize(luma, x + dx, 185 + dy, bw).base);
-          packedBit(second_, size_t(315 + dy) * Width + x + dx,
-                    quantize(luma, x + dx, 315 + dy, bw).base);
-        }
       text(x, 207, "BLACK START");
       text(x, 337, "WHITE START");
       text(x, 360, "F");
@@ -422,14 +447,16 @@ class Calibration {
     second_.clear();
     driveCount = 0;
     requested = {};
-    const bool photo = image_ == TestImage::LandscapeGray;
-    if (photo) {
-      for (uint16_t y = 20; y < 460; ++y)
-        for (uint16_t x = 0; x < Width; ++x) {
-          const uint8_t bucket = landscapeBucket(uint32_t(y) * Width + x);
-          if (bucket > 0 && bucket < 7)
-            select({x, y, 1, 1}, uint8_t(1 + (bucket - 1) % 3));
-        }
+    const bool fullImage = usesRelativeGray(image_);
+    if (fullImage) {
+      paintRelativeShades(image_, seed_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
+        if (!shade.selector) return;
+        const size_t index = size_t(y) * Width + x;
+        packedBit(first_, index, shade.selector & 2);
+        packedBit(second_, index, shade.selector & 1);
+        ++driveCount;
+        requested.include(x, y);
+      });
     } else if (conditioning_)
       select({0, 0, 800, 480}, 1);
     else {
@@ -448,15 +475,15 @@ class Calibration {
     // With a full-height activation, cropped writes could expose stale
     // selectors outside the uploaded rows. Until a separate RAM hold baseline
     // is implemented, crop only when activation is confined to those same rows.
-    Rect uploadRect = !photo && croppedUploadValidated && verticalWindowValidated
+    Rect uploadRect = !fullImage && croppedUploadValidated && verticalWindowValidated
                           ? expanded
                           : Rect{0, 0, 800, 480};
     if (!upload(uploadRect)) return fail();
     const auto bank = candidates(parameters, holdRail);
-    const Rect activation = !photo && verticalWindowValidated
+    const Rect activation = !fullImage && verticalWindowValidated
                                 ? expanded : Rect{0, 0, 800, 480};
     if (!transport_.activate(bank, {0, activation.y, 800, activation.height},
-                             !photo && verticalWindowValidated, now))
+                             !fullImage && verticalWindowValidated, now))
       return fail();
     // Save the exact bytes only after the transport accepted activation.
     settleBank_ = bank;
@@ -464,7 +491,7 @@ class Calibration {
     programmedRotation_ = rotation_;
     programmedHoldRail_ = holdRail;
     ++waveformId_;
-    lastActivation_ = !photo && verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
+    lastActivation_ = !fullImage && verticalWindowValidated ? expanded : Rect{0, 0, 800, 480};
     job_ = conditioning_ ? Job::Conditioning : Job::Settle;
     return true;
   }

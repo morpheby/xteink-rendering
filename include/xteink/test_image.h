@@ -4,21 +4,27 @@
 
 namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
-                                LandscapeDither, LandscapeGray };
+                                LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp };
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
+constexpr bool usesRelativeGray(TestImage image) {
+  return image == TestImage::Reference || image == TestImage::Random ||
+         image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
+         image == TestImage::LinearRamp;
+}
+
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
   plane.clear(image == TestImage::Black ? 0 : 255);
-  if (image == TestImage::White || image == TestImage::Black) return;
-  if (image == TestImage::LandscapeDither || image == TestImage::LandscapeGray) {
+  if (image == TestImage::White || image == TestImage::Black ||
+      image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
+      image == TestImage::LinearRamp) return;
+  if (image == TestImage::LandscapeDither) {
     Settings bw;
     for (uint16_t y = 20; y < 460; ++y)
       for (uint16_t x = 0; x < Width; ++x) {
         const uint32_t i = uint32_t(y) * Width + x;
-        const bool white = image == TestImage::LandscapeGray
-                               ? landscapeBucket(i) >= 4
-                               : quantize(landscapeLuma(i), x, y, bw).base;
+        const bool white = quantize(landscapeLuma(i), x, y, bw).base;
         packedBit(plane, i, white);
       }
     return;
@@ -80,5 +86,99 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
   rect(10, 435, 780, 3, false);
   rect(10, 50, 3, 388, false);
   rect(787, 50, 3, 388, false);
+}
+// IDs 1..3 are A/B/C from black. IDs 4..6 are A/B/C from white.
+constexpr Shade relativeShade(uint8_t id, uint8_t luma) {
+  return {luma, uint8_t(id >= 4), uint8_t(id == 0 || id == 7 ? 0 : 1 + (id - 1) % 3)};
+}
+constexpr uint8_t relativeShadeId(Shade shade) {
+  return shade.selector ? uint8_t(shade.selector + 3 * shade.base) : uint8_t(shade.base ? 7 : 0);
+}
+constexpr uint8_t NeighborTop = 78;
+constexpr uint8_t NeighborRowHeight = 56;
+constexpr uint8_t NeighborSwatchHeight = 43;
+constexpr uint16_t neighborColumn(uint8_t step) {
+  return uint16_t(unsigned(step) * Width / 17);
+}
+constexpr const char* shadeLabel(uint8_t id) {
+  constexpr const char* labels[] = {"BLACK", "A BLACK", "B BLACK", "C BLACK",
+                                    "A WHITE", "B WHITE", "C WHITE", "WHITE"};
+  return labels[id];
+}
+inline Palette provisionalRelativePalette() {
+  Palette palette;
+  palette.count = 8;
+  for (uint8_t i = 0; i < 8; ++i)
+    palette.shades[i] = relativeShade(i, uint8_t(unsigned(i) * 255 / 7));
+  return palette;
+}
+
+// Identical coordinates and quantizer for both passes. Each emitted shade
+// carries its B/W starting pixel AND the matching settle selector.
+template <class Emit>
+void paintRelativeShades(TestImage image, uint32_t seed, const Settings& settings, Emit emit) {
+  auto patch = [&](uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t luma) {
+    for (uint16_t py = y; py < y + h; ++py)
+      for (uint16_t px = x; px < x + w; ++px)
+        emit(px, py, quantize(luma, px, py, settings));
+  };
+  switch (image) {
+    case TestImage::LandscapeGray:
+      for (uint16_t y = 20; y < 460; ++y)
+        for (uint16_t x = 0; x < Width; ++x)
+          emit(x, y, quantize(landscapeLuma(uint32_t(y) * Width + x), x, y, settings));
+      break;
+    case TestImage::Reference:
+      for (uint8_t i = 0; i < 12; ++i)
+        patch(20 + 20 * i, 222, 20, 16, uint8_t(255u * i / 11));
+      patch(285, 81, 92, 105, 72);
+      patch(385, 81, 98, 105, 182);
+      patch(638, 313, 10, 92, 104);
+      break;
+    case TestImage::Random:
+      for (uint8_t i = 0; i < 12; ++i) {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        patch(25 + (i % 6) * 90, 62 + (i / 6) * 191, 41 + seed % 25,
+              47 + (seed >> 8) % 50, uint8_t(42 + (seed >> 16) % 172));
+      }
+      break;
+    case TestImage::LinearRamp: {
+      uint8_t left = 0, right = 255;
+      for (uint8_t i = 0; i < settings.palette.count; ++i) {
+        const auto shade = settings.palette.shades[i];
+        if (relativeShadeId(shade) == 1) left = shade.luma;
+        if (relativeShadeId(shade) == 6) right = shade.luma;
+      }
+      Settings bw;
+      for (uint16_t x = 0; x < Width; ++x) {
+        const uint8_t luma = uint8_t((unsigned(left) * (Width - 1 - x) +
+                                      unsigned(right) * x + (Width - 1) / 2) / (Width - 1));
+        for (uint16_t y = 76; y < 258; ++y)
+          emit(x, y, quantize(luma, x, y, settings));
+        for (uint16_t y = 278; y < 460; ++y)
+          emit(x, y, quantize(luma, x, y, bw));
+      }
+      break;
+    }
+    case TestImage::NeighborSweep:
+      // One raw sample of every endpoint, in fixed identity order for sorting.
+      for (uint8_t raw = 0; raw < 8; ++raw)
+        for (uint16_t y = 28; y < 56; ++y)
+          for (uint16_t x = raw * 100; x < (raw + 1) * 100; ++x)
+            emit(x, y, relativeShade(raw, 0));
+      for (uint8_t pair = 0; pair + 1 < settings.palette.count; ++pair) {
+        const auto dark = settings.palette.shades[pair], light = settings.palette.shades[pair + 1];
+        const uint16_t top = NeighborTop + pair * NeighborRowHeight;
+        for (uint8_t step = 0; step <= 16; ++step)
+          for (uint16_t y = top; y < top + NeighborSwatchHeight; ++y)
+            for (uint16_t x = neighborColumn(step); x < neighborColumn(step + 1); ++x)
+              emit(x, y, mixNeighbors(dark, light, step, x, y));
+      }
+      break;
+    default:
+      break;
+  }
 }
 }  // namespace x4render

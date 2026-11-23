@@ -26,10 +26,6 @@ inline uint8_t landscapeLuma(uint32_t index) {
   const uint8_t packed = LandscapePixels[index / 2];
   return uint8_t(((index & 1) ? (packed & 15) : (packed >> 4)) * 17);
 }
-// Provisional test buckets, NOT a measured panel palette.
-inline uint8_t landscapeBucket(uint32_t index) {
-  return uint8_t((uint16_t(landscapeLuma(index)) * 7 + 127) / 255);
-}
 }  // namespace x4render
 '''
 (root/'include/xteink/landscape.h').write_text(header)

@@ -196,8 +196,8 @@ int main() {
   assert(r.factoryPreparation() && !r.preparationLut(0));
   r.poll(61);
   r.poll(62);
-  // Explicit test images stop after the selected B/W operation. No candidate
-  // pass or stale held-reference assumption may follow them.
+  // Pure clears stop after one pass. Image targets with gray use both passes
+  // and do not establish a held-reference calibration chart.
   for (bool conditioned : {false, true}) {
     r.bwPreparation.programmable = true;
     r.bwPreparation.conditioned = conditioned;
@@ -211,8 +211,14 @@ int main() {
       if (image == x4render::TestImage::White || image == x4render::TestImage::Black)
         for (auto b : rotated.uploads[uploads])
           assert(b == (image == x4render::TestImage::White ? 255 : 0));
-      assert(r.poll(72));
-      assert(rotated.banks.size() == banks + 1 && !r.settleLut(0));
+      if (x4render::usesRelativeGray(image)) {
+        assert(!r.poll(72) && r.poll(73));
+        assert(rotated.banks.size() == banks + 2 && r.settleLut(0));
+        assert(rotated.uploads.size() == uploads + 4);
+      } else {
+        assert(r.poll(72));
+        assert(rotated.banks.size() == banks + 1 && !r.settleLut(0));
+      }
     }
   }
   const auto beforeRebuild = rotated.uploads.size();
@@ -268,6 +274,35 @@ int main() {
   assert(photo.busy() && photo.driveCount > 100000);
   assert(!landscape.vertical && landscape.activation.height == 480);
   assert(photo.poll(5));
+  for (auto image : {x4render::TestImage::NeighborSweep, x4render::TestImage::LinearRamp}) {
+    const auto start = landscape.uploads.size();
+    assert(photo.startImage(6, image));
+    assert(!photo.poll(7) && photo.poll(8));
+    assert(landscape.uploads.size() == start + 4);
+    for (const auto position : {std::pair{0, 100}, std::pair{400, 100}, std::pair{799, 128}}) {
+      const auto x = position.first, y = position.second;
+      const auto shade = [&] {
+        x4render::Shade q{255,1,0};
+        x4render::Settings settings;
+        settings.mode = x4render::Mode::DitherSettle;
+        settings.palette = photo.imagePalette;
+        x4render::paintRelativeShades(image, 0, settings,
+          [&](int px, int py, auto candidate) {
+            if (px == x && py == y) q = candidate;
+          });
+        return q;
+      }();
+      // The old/new transport planes carry the same pixel's base and selector.
+      assert(pixel(landscape.uploads[start], x, y) == bool(shade.base));
+      assert(pixel(landscape.uploads[start + 2], x, y) == bool(shade.selector & 1));
+      assert(pixel(landscape.uploads[start + 3], x, y) == bool(shade.selector & 2));
+    }
+    if (image == x4render::TestImage::LinearRamp)
+      for (int y = 278; y < 460; ++y)
+        for (int x = 0; x < 800; ++x)
+          assert(!pixel(landscape.uploads[start + 2], x, y) &&
+                 !pixel(landscape.uploads[start + 3], x, y));
+  }
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

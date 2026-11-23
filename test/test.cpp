@@ -71,6 +71,24 @@ int main() {
   for (uint16_t x = 0; x < Width; ++x)
     for (uint8_t v = 0; v < 255; ++v)
       assert(same(quantize(v, x, 9, s), quantize(v, x, 9, s)));
+  // A measured flat response drops redundant duty steps and changes the
+  // quantization on the very same neighboring shade pair.
+  auto curved = s;
+  curved.palette.coverage[0] = {0, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255,
+                                255, 255, 255, 255, 255, 255};
+  assert(curved.palette.valid() && !curved.equivalent(s));
+  auto lighterCount = [](const Settings& settings, uint8_t luma) {
+    unsigned lit = 0;
+    for (uint16_t y = 0; y < 4; ++y)
+      for (uint16_t x = 0; x < 4; ++x)
+        lit += same(quantize(luma, x, y, settings), settings.palette.shades[1]);
+    return lit;
+  };
+  assert(lighterCount(s, 46) == 12);
+  assert(lighterCount(curved, 46) == 9);
+  assert(lighterCount(curved, 61) == 16);
+  curved.palette.coverage[0][3] = 1;
+  assert(!curved.palette.valid());
   s.palette.calibrated = false;
   assert(!f.plan(s));
   const auto bank = candidates(

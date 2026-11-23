@@ -149,16 +149,60 @@ inline bool useColumnDither(uint16_t x, uint16_t y, unsigned strength) {
   return strength >= 100 || (strength && bw_detail::phase(y / 4, x / 4) % 100 < strength);
 }
 
+inline uint16_t grainColumn(uint16_t x, uint16_t y, unsigned grain) {
+  if (!grain) return x;
+  const unsigned pair = x / 2;
+  const uint32_t seed = bw_detail::phase(0x91, pair);
+  if (seed % 100 >= grain) return x;
+  // Swap neighboring thresholds in pairs. Stagger the eight-row opportunities
+  // so a texture phase change does not land across the entire row at once.
+  const unsigned epoch = (y + ((seed >> 8) & 7)) / 8;
+  return x ^ ((bw_detail::phase(epoch, pair) >> 16) & 1);
+}
+
+struct BwBurstBudget {
+  unsigned budget, headroom;
+  std::array<unsigned, 2> credit;
+
+  BwBurstBudget(unsigned budget, unsigned headroom)
+      : budget(budget), headroom(headroom), credit{{headroom, headroom}} {}
+  unsigned available(size_t rail) const { return budget + credit[rail]; }
+  void consume(size_t rail, unsigned count) {
+    credit[rail] = count < available(rail) ? std::min(headroom, available(rail) - count) : 0;
+  }
+};
+
+inline bool fitsBwBurst(const Buffer& image, unsigned budget, unsigned headroom) {
+  if (image.size() != PlaneBytes) return false;
+  constexpr size_t stride = Width / 8;
+  BwBurstBudget burst(budget, headroom);
+  for (size_t y = 1; y < Height; ++y) {
+    unsigned toWhite = 0, toBlack = 0;
+    for (size_t x = 0; x < stride; ++x) {
+      const uint8_t before = image[(y - 1) * stride + x], after = image[y * stride + x];
+      const uint8_t changed = before ^ after;
+      toWhite += bwPopcount(changed & after);
+      toBlack += bwPopcount(changed & before);
+    }
+    if (toWhite > burst.available(0) || toBlack > burst.available(1)) return false;
+    burst.consume(0, toWhite);
+    burst.consume(1, toBlack);
+  }
+  return true;
+}
+
 // Repair in panel scan order. Only a desired transition can be suppressed.
 // The callback grades a pixel 0..11; grades 8..11 are protected marks.
 // Return the number of protected marks the budget forced us to change.
 template <class Priority>
-uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority, unsigned strength = 100) {
+uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority,
+                      unsigned strength = 100, unsigned headroom = 0) {
   using namespace bw_detail;
   constexpr size_t stride = Width / 8;
   if (!strength) return 0;
   strength = std::min(strength, 100u);
   const unsigned tilePeak = 3 * budget / 20, tileSustained = budget / 10;
+  BwBurstBudget burst(budget, headroom);
   std::array<std::array<uint16_t, TileCount>, 2> recent{};
   uint32_t protectedEdits = 0;
   for (unsigned y = 1; y < Height; ++y) {
@@ -182,10 +226,15 @@ uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority, unsigne
         room[rail][tile] = std::max(0, int(requested[rail][tile]) - drop);
     }
     const unsigned whites = total(room[0]), blacks = total(room[1]);
-    const unsigned most = std::max(whites, blacks);
-    if (most > budget) {
-      const unsigned drop = ((most - budget) * strength + 99) / 100;
+    const int excess = std::max(int(whites) - int(burst.available(0)),
+                                int(blacks) - int(burst.available(1)));
+    if (excess > 0) {
+      const unsigned drop = ((unsigned(excess) * strength) + 99) / 100;
       suppress(room, std::min(whites, drop), std::min(blacks, drop), phase(y));
+    }
+    if (headroom) {
+      burst.consume(0, total(room[0]));
+      burst.consume(1, total(room[1]));
     }
     for (size_t tile = 0; tile < TileCount; ++tile) {
       for (size_t rail = 0; rail < 2; ++rail)

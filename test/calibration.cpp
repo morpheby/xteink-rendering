@@ -480,6 +480,30 @@ int main() {
     }
   }
 
+  for (auto pattern : {x4render::StripPattern::BurstOne, x4render::StripPattern::BurstEight}) {
+    x4render::paintTestImage(loadProbe, x4render::TestImage::LoadStrip,
+                             (uint32_t(pattern) << 16) | 400);
+    assert(!x4render::fitsBwBurst(loadProbe, 160, 0));
+    assert(x4render::fitsBwBurst(loadProbe, 160, 40) == (pattern == x4render::StripPattern::BurstOne));
+  }
+  x4render::BwBurstBudget headroom(160, 40);
+  assert(headroom.available(0) == 200 && headroom.available(1) == 200);
+  headroom.consume(0, 200);
+  assert(headroom.available(0) == 160 && headroom.available(1) == 200);
+  headroom.consume(0, 0);
+  assert(headroom.available(0) == 200);
+  unsigned swaps = 0, changes = 0;
+  for (uint16_t y = 0; y < 64; ++y) {
+    for (uint16_t x = 0; x < x4render::Width; x += 2) {
+      const auto a = x4render::grainColumn(x, y, 100);
+      const auto b = x4render::grainColumn(x+1, y, 100);
+      assert(x4render::grainColumn(x, y, 0) == x && (a ^ 1) == b && (a & ~1) == x);
+      swaps += a != x;
+      changes += y && a != x4render::grainColumn(x, y-1, 100);
+    }
+  }
+  assert(swaps > 0 && changes > 0 && changes < 400u * 64 / 8);
+
   // An all-white/all-black alternating row puts every transition on one rail.
   x4render::Buffer oneDirection;
   assert(oneDirection.allocate(x4render::PlaneBytes));

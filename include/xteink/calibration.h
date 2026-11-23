@@ -46,6 +46,7 @@ class Calibration {
   BwTexture bwTexture{BwTexture::Bayer};
   uint16_t bwBudget{80};
   uint8_t columnStrength{100}, repairStrength{100};
+  uint8_t columnGrain{0}, burstHeadroom{0};
   bool bwSplitGuard{true};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
@@ -526,13 +527,13 @@ class Calibration {
         for (uint16_t x = 0; x < Width; ++x) {
           if (!useColumnDither(x, y, columnStrength) || protectedMark(x, y)) continue;
           const size_t i = size_t(y) * Width + x;
-          packedBit(second_, i, columnDither(luma(i), x));
+          packedBit(second_, i, columnDither(luma(i), grainColumn(x, y, columnGrain)));
         }
     } else if (bwTexture == BwTexture::Repair && repairStrength) {
       const auto edits = repairBwRows(second_, bwBudget, [&](uint16_t x, uint16_t y) {
         const int tone = luma(size_t(y) * Width + x);
         return std::min(3, std::abs(tone - 128) / 32) + 8 * protectedMark(x, y);
-      }, repairStrength);
+      }, repairStrength, burstHeadroom);
       // The checkerboard witnesses may show small repair artifacts. Do not
       // trade away actual dashboard marks to make a load count pass.
       if (boiler && edits) {
@@ -544,9 +545,9 @@ class Calibration {
         ? requestedBwLoad_ : measureBwLoad(second_);
   }
   bool exceedsBwBudget() const {
-    return renderedBwLoad_.peak > bwBudget ||
-           renderedBwLoad_.localPeak > 3 * bwBudget / 4 ||
-           renderedBwLoad_.recentPeak > bwBudget / 2;
+    if (renderedBwLoad_.localPeak > 3 * bwBudget / 4 || renderedBwLoad_.recentPeak > bwBudget / 2 ||
+        renderedBwLoad_.peak > bwBudget + burstHeadroom) return true;
+    return renderedBwLoad_.peak > bwBudget && !fitsBwBurst(second_, bwBudget, burstHeadroom);
   }
   bool beginSplit(uint32_t now, uint16_t budget) {
     stripPlan_ = planBwStrips(second_, budget);

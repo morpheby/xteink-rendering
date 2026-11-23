@@ -68,6 +68,18 @@ grays while retaining the reference patches.
 `measuredStablePalette` orders the three measured tones between the black and
 white endpoints while retaining their LUT selectors.
 
+## Use the calibrated profiles
+
+`Frames::plan` compares the new and displayed frames in the selected
+palette. With `Mode::SingleSettle`, only changed pixels are selected.
+`Mode::DitherSettle` also includes connected gray pixels from both frames.
+Both modes can use `GrayRefresh` under an exclusive transport lease, with
+a factory-derived B/W bank and a calibrated settle bank. It uses at most
+three column zones for each stage and can reject a frame before touching
+the panel. The caller commits frame history after all activations and
+power-off complete. In single-settle mode, gray pixels get their reset in
+the combined LUT and bypass the endpoint preparation pass.
+
 Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
 The public-domain photo and upstream credits are in the
 [asset notes](assets/README.md).

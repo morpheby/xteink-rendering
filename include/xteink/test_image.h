@@ -6,7 +6,7 @@ namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
                                 LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp,
                                 RampBase, RampInverse, LoadStripes, LoadCheckerboard,
-                                LoadStrip, SplitCheckerboard };
+                                LoadStrip, SplitCheckerboard, BwPhoto, BwChecker, BwBoiler };
 
 // Leave space for a 96-column reference triplet and a 16-column margin on
 // each side. Steps of 16 keep both edges of the centered strip byte aligned.
@@ -14,6 +14,19 @@ constexpr uint16_t LoadSwatchWidth = 32;
 constexpr uint16_t LoadReferenceInset = 16;
 constexpr uint16_t LoadReferenceWidth = 3 * LoadSwatchWidth;
 constexpr uint16_t LoadStripMaxWidth = Width - 2 * (LoadReferenceWidth + LoadReferenceInset);
+constexpr uint16_t LoadPatchX[][2] = {{16, 416}, {144, 544}, {280, 680}};
+constexpr uint16_t LoadPatchY[] = {72, 208, 344};
+inline bool isLoadPatch(uint16_t x, uint16_t y) {
+  for (size_t band = 0; band < 3; ++band) {
+    if (y < LoadPatchY[band] || y >= LoadPatchY[band] + 64) continue;
+    for (auto left : LoadPatchX[band])
+      if (x >= left && x < left + LoadReferenceWidth) return true;
+  }
+  return false;
+}
+constexpr bool usesBwTexture(TestImage image) {
+  return image == TestImage::BwPhoto || image == TestImage::BwChecker || image == TestImage::BwBoiler;
+}
 constexpr uint16_t loadStripWidth(uint32_t requested) {
   return uint16_t((requested < LoadStripMaxWidth ? requested : LoadStripMaxWidth) / 16 * 16);
 }
@@ -32,7 +45,8 @@ constexpr bool usesRelativeGray(TestImage image) {
 }
 
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
-  if (image == TestImage::SplitCheckerboard) image = TestImage::LoadCheckerboard;
+  if (image == TestImage::SplitCheckerboard || image == TestImage::BwChecker)
+    image = TestImage::LoadCheckerboard;
   if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard ||
       image == TestImage::LoadStrip) {
     // Identical, row-balanced reference patches embedded in the load. Fixed
@@ -60,11 +74,9 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
     }
     if (strip) return;
 
-    constexpr uint16_t patchX[][2] = {{16, 416}, {144, 544}, {280, 680}};
-    constexpr uint16_t patchY[] = {72, 208, 344};
     for (size_t band = 0; band < 3; ++band)
-      for (uint16_t y = patchY[band]; y < patchY[band] + 64; ++y)
-        for (uint16_t x : patchX[band])
+      for (uint16_t y = LoadPatchY[band]; y < LoadPatchY[band] + 64; ++y)
+        for (uint16_t x : LoadPatchX[band])
           reference(plane.data() + size_t(y) * (Width / 8), x);
     return;
   }
@@ -72,10 +84,11 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
   plane.clear(image == TestImage::Black ? 0 : 255);
   if (image == TestImage::White || image == TestImage::Black ||
       image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
-      isRampImage(image)) return;
-  if (image == TestImage::LandscapeDither) {
+      image == TestImage::BwBoiler || isRampImage(image)) return;
+  if (image == TestImage::LandscapeDither || image == TestImage::BwPhoto) {
     Settings bw;
-    for (uint16_t y = 20; y < 460; ++y)
+    const uint16_t inset = image == TestImage::BwPhoto ? 0 : 20;
+    for (uint16_t y = inset; y < Height - inset; ++y)
       for (uint16_t x = 0; x < Width; ++x) {
         const uint32_t i = uint32_t(y) * Width + x;
         const bool white = quantize(landscapeLuma(i), x, y, bw).base;

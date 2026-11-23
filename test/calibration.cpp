@@ -461,6 +461,60 @@ int main() {
   assert(split.poll(26) && !split.busy() && split.cycles == 1);
   assert(splitTransport.banks.size() == 6);
 
+  // The two approximation modes use the same B/W transport and have no settle.
+  Fake textureTransport;
+  textureTransport.state = Fake::Status::Ready;
+  x4render::Calibration<Fake> texture(textureTransport);
+  assert(texture.allocate());
+  texture.bwPreparation.programmable = true;
+  texture.factoryDerivedBw = source;
+  for (const auto scene : {x4render::TestImage::BwPhoto, x4render::TestImage::BwChecker}) {
+    for (const auto mode : {x4render::BwTexture::Columns, x4render::BwTexture::Repair}) {
+      texture.bwTexture = mode;
+      const auto uploads = textureTransport.uploads.size();
+      assert(texture.startImage(27, scene) && texture.poll(28));
+      assert(texture.requestedBwLoad().peak > 80 && texture.renderedBwLoad().peak <= 80);
+      assert(texture.renderedBwLoad().localPeak <= 60 && texture.renderedBwLoad().recentPeak <= 40);
+      assert(texture.renderedBwTexture() == mode && !texture.stripCount() && !texture.settleLut(0));
+      assert(textureTransport.uploads.size() == uploads + 2 && textureTransport.fullBw);
+      const auto& output = textureTransport.uploads[uploads];
+      for (size_t i = 0; i < x4render::PlaneBytes; ++i)
+        assert(textureTransport.uploads[uploads + 1][i] == uint8_t(~output[i]));
+      if (scene == x4render::TestImage::BwChecker && mode == x4render::BwTexture::Columns)
+        for (uint16_t y = 0; y < x4render::Height; ++y)
+          for (uint16_t x = 0; x < x4render::Width; ++x)
+            assert(pixel(output, x, y) ==
+                   (x4render::isLoadPatch(x, y) ? pixel(checkerboard, x, y) : (x % 2 == 0)));
+    }
+  }
+
+  // A protected full-width 1 px rule must be drawn exactly, using the split
+  // path when one scan line exceeds the directed transition limit.
+  x4render::Buffer boiler;
+  assert(boiler.allocate(x4render::Pixels));
+  boiler.clear(255);
+  std::memset(boiler.data() + 90 * x4render::Width, 0, x4render::Width);
+  assert(!texture.startImage(29, x4render::TestImage::BwBoiler));
+  texture.boilerLuma = boiler.data();
+  for (const auto mode : {x4render::BwTexture::Columns, x4render::BwTexture::Repair}) {
+    texture.bwTexture = mode;
+    const auto uploads = textureTransport.uploads.size();
+    assert(texture.startImage(30, x4render::TestImage::BwBoiler));
+    assert(texture.stripCount() == 20 && texture.protectedFallback() == (mode == x4render::BwTexture::Repair));
+    assert(texture.renderedBwLoad().peak == 800);
+    for (size_t n = 0; n < 20; ++n) {
+      const auto& output = textureTransport.uploads[uploads + 2 * n];
+      const auto& old = textureTransport.uploads[uploads + 2 * n + 1];
+      for (uint16_t x = 0; x < x4render::Width; ++x) {
+        const bool active = size_t(x) / 40 == n;
+        assert(pixel(output, x, 89) == active && !pixel(old, x, 89));
+        assert(!pixel(output, x, 90) && pixel(old, x, 90) == active);
+      }
+      assert(texture.poll(31 + n) == (n == 19));
+    }
+    assert(texture.driveCount == x4render::Pixels && !texture.settleLut(0));
+  }
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

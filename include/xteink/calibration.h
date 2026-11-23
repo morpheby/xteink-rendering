@@ -1,4 +1,5 @@
 #pragma once
+#include "bw_approximation.h"
 #include "bw_strips.h"
 #include "rendering.h"
 #include "waveform.h"
@@ -39,6 +40,10 @@ class Calibration {
   BwPreparation bwPreparation{};
   Palette imagePalette = provisionalRelativePalette();
   std::optional<LutBank> factoryDerivedBw{};
+  const uint8_t* boilerLuma{nullptr};   // Caller keeps its committed frame stable during the lab session.
+  BwTexture bwTexture{BwTexture::Bayer};
+  uint16_t bwBudget{80};
+  bool bwSplitGuard{true};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
   bool start(uint32_t now, bool prepare = true, bool rotate = false,
@@ -49,7 +54,12 @@ class Calibration {
   // LoadStrip takes a width, SplitCheckerboard a per-rail budget, and random
   // artwork a seed. Repeat Image replays the same argument.
   bool startImage(uint32_t now, TestImage image, uint32_t argument = 0) {
-    if (busy() || image < TestImage::White || image > TestImage::SplitCheckerboard) return false;
+    if (busy() || image < TestImage::White || image > TestImage::BwBoiler) return false;
+    if (image == TestImage::BwBoiler && !boilerLuma) {
+      result_ = "boiler snapshot unavailable; show dashboard first";
+      return false;
+    }
+    if (usesBwTexture(image) && (bwBudget < 32 || bwBudget > 160)) return false;
     if (image == TestImage::SplitCheckerboard) {
       if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
         result_ = "split requires Factory Tuned or Replay, prime off";
@@ -66,6 +76,10 @@ class Calibration {
   uint32_t imageSeed() const { return imageArgument_; }
   uint16_t stripWidth() const { return loadStripWidth(imageArgument_); }
   uint8_t stripCount() const { return stripPlan_.count; }
+  BwLoad requestedBwLoad() const { return requestedBwLoad_; }
+  BwLoad renderedBwLoad() const { return renderedBwLoad_; }
+  BwTexture renderedBwTexture() const { return protectedFallback_ ? BwTexture::Bayer : bwTexture; }
+  bool protectedFallback() const { return protectedFallback_; }
 
  private:
   bool startOperation(uint32_t now, bool prepare, bool rotate, bool conditioning,
@@ -78,6 +92,8 @@ class Calibration {
     image_ = image;
     imageArgument_ = argument;
     stripPlan_.count = nextStrip_ = 0;
+    protectedFallback_ = false;
+    requestedBwLoad_ = renderedBwLoad_ = {};
     pauseMs_ = bwPreparation.pauseMs;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
@@ -140,7 +156,7 @@ class Calibration {
       return !beginPass(now);
     }
     if (job_ == Job::Base) {
-      if (image_ == TestImage::SplitCheckerboard && nextStrip_ < stripPlan_.count)
+      if (nextStrip_ < stripPlan_.count)
         return !beginSplitStrip(now);
       if (factoryPreparation_) otpPrimed_ = true;
       prepare_ = false;
@@ -334,19 +350,21 @@ class Calibration {
     references_ = false;
     if (image_ == TestImage::SplitCheckerboard) {
       paintTestImage(second_, image_, imageArgument_);
-      stripPlan_ = planBwStrips(second_, uint16_t(imageArgument_));
-      if (!stripPlan_.count) return fail();
-      driveCount = 0;
-      preparationValid_ = factoryPreparation_ = settleValid_ = false;
-      preparationBank_ = *factoryDerivedBw;
-      // The verified factory-derived VCOM row is code 0 throughout and
-      // carries the exact timing. Use it for equal-bit (unselected) pixels.
-      preparationBank_[Row[0]] = preparationBank_[Row[3]] = preparationBank_[0];
-      return beginSplitStrip(now);
+      return beginSplit(now, uint16_t(imageArgument_));
     }
     first_.clear(255);
     second_.clear(255);
-    if (image_ != TestImage::Calibration) {
+    if (usesBwTexture(image_)) {
+      renderBwPreview();
+      if (bwTexture != BwTexture::Bayer && bwSplitGuard && exceedsBwBudget()) {
+        if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
+          fail();
+          result_ = "split guard requires Factory Tuned or Replay, prime off";
+          return false;
+        }
+        return beginSplit(now, bwBudget / 2);
+      }
+    } else if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, imageArgument_);
       if (usesRelativeGray(image_) || isRampImage(image_)) {
         if (!imagePalette.valid()) return fail();
@@ -460,18 +478,85 @@ class Calibration {
     job_ = Job::Base;
     return true;
   }
+  void renderBwPreview() {
+    const bool boiler = image_ == TestImage::BwBoiler;
+    const bool checker = image_ == TestImage::BwChecker;
+    auto luma = [&](size_t i) { return boiler ? boilerLuma[i] : checker ? uint8_t(128) : landscapeLuma(i); };
+    auto protectedMark = [&](uint16_t x, uint16_t y) {
+      if (checker) return isLoadPatch(x, y);
+      if (!boiler) return false;
+      const size_t i = size_t(y) * Width + x;
+      const int v = boilerLuma[i];
+      // Preserve hard endpoints and the antialiasing next to a strong edge.
+      return v == 0 || v == 255 ||
+             (x && std::abs(v - boilerLuma[i - 1]) >= 64) ||
+             (x + 1 < Width && std::abs(v - boilerLuma[i + 1]) >= 64) ||
+             (y && std::abs(v - boilerLuma[i - Width]) >= 64) ||
+             (y + 1 < Height && std::abs(v - boilerLuma[i + Width]) >= 64);
+    };
+    auto bayer = [&]() {
+      if (!boiler) {
+        paintTestImage(second_, image_, imageArgument_);
+        return;
+      }
+      const Settings bw;
+      for (uint16_t y = 0; y < Height; ++y)
+        for (uint16_t x = 0; x < Width; ++x) {
+          const size_t i = size_t(y) * Width + x;
+          packedBit(second_, i, quantize(luma(i), x, y, bw).base);
+        }
+    };
+    bayer();
+    requestedBwLoad_ = measureBwLoad(second_);
+    if (bwTexture == BwTexture::Columns) {
+      for (uint16_t y = 0; y < Height; ++y)
+        for (uint16_t x = 0; x < Width; ++x) {
+          if (protectedMark(x, y)) continue;
+          const size_t i = size_t(y) * Width + x;
+          packedBit(second_, i, columnDither(luma(i), x));
+        }
+    } else if (bwTexture == BwTexture::Repair) {
+      const auto edits = repairBwRows(second_, bwBudget, [&](uint16_t x, uint16_t y) {
+        const int tone = luma(size_t(y) * Width + x);
+        return std::min(3, std::abs(tone - 128) / 32) + 8 * protectedMark(x, y);
+      });
+      // The checkerboard witnesses may show small repair artifacts. Do not
+      // trade away actual dashboard marks to make a load count pass.
+      if (boiler && edits) {
+        bayer();
+        protectedFallback_ = true;
+      }
+    }
+    renderedBwLoad_ = bwTexture == BwTexture::Bayer || protectedFallback_
+        ? requestedBwLoad_ : measureBwLoad(second_);
+  }
+  bool exceedsBwBudget() const {
+    return renderedBwLoad_.peak > bwBudget ||
+           renderedBwLoad_.localPeak > 3 * bwBudget / 4 ||
+           renderedBwLoad_.recentPeak > bwBudget / 2;
+  }
+  bool beginSplit(uint32_t now, uint16_t budget) {
+    stripPlan_ = planBwStrips(second_, budget);
+    if (!stripPlan_.count || !splitTarget_.allocate(PlaneBytes)) return fail();
+    std::memcpy(splitTarget_.data(), second_.data(), PlaneBytes);
+    driveCount = 0;
+    preparationValid_ = factoryPreparation_ = settleValid_ = false;
+    preparationBank_ = *factoryDerivedBw;
+    // Align code 0 in unused selectors with the verified factory VCOM timing.
+    preparationBank_[Row[0]] = preparationBank_[Row[3]] = preparationBank_[0];
+    return beginSplitStrip(now);
+  }
   bool beginSplitStrip(uint32_t now) {
     constexpr size_t stride = Width / 8;
     const uint16_t left = nextStrip_ ? stripPlan_.ends[nextStrip_ - 1] : 0;
     const uint16_t right = stripPlan_.ends[nextStrip_];
     const size_t beginByte = left / 8, endByte = right / 8;
-    if (nextStrip_) paintTestImage(second_, image_, imageArgument_);
     first_.clear();
+    second_.clear();
     for (size_t y = 0; y < Height; ++y) {
       auto* target = second_.data() + y * stride;
       auto* previous = first_.data() + y * stride;
-      std::memset(target, 0, beginByte);
-      std::memset(target + endByte, 0, stride - endByte);
+      std::memcpy(target + beginByte, splitTarget_.data() + y * stride + beginByte, endByte - beginByte);
       for (size_t x = beginByte; x < endByte; ++x)
         previous[x] = uint8_t(~target[x]);
     }
@@ -562,13 +647,15 @@ class Calibration {
   uint32_t waveformId_{0};
   Rect lastActivation_{};
   Transport& transport_;
-  Buffer first_, second_;
+  Buffer first_, second_, splitTarget_;
   Job job_{Job::Idle};
   bool references_{false}, prepare_{true}, conditioning_{false};
   bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
   uint32_t imageArgument_{0}, baseCompleted_{0};
   BwStripPlan stripPlan_{};
+  BwLoad requestedBwLoad_{}, renderedBwLoad_{};
+  bool protectedFallback_{false};
   uint8_t nextStrip_{0};
   uint16_t pauseMs_{0};
   uint8_t rotation_{0};

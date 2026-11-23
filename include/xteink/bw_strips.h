@@ -1,5 +1,5 @@
 #pragma once
-#include "rendering.h"
+#include "bw_approximation.h"
 
 namespace x4render {
 
@@ -7,6 +7,51 @@ struct BwStripPlan {
   std::array<uint16_t, Width / 8> ends{};
   uint8_t count{0};
 };
+
+struct BwZonePlan {
+  BwColumnMask owners{};
+  uint8_t count{0}, laneWidth{0};
+  uint16_t wholeRecent{0}, localRecent{0}, localSustained{0};
+
+  void include(const BwLoad& load) {
+    wholeRecent = std::max(wholeRecent, load.wholeRecentPeak);
+    localRecent = std::max(localRecent, load.recentPeak);
+    localSustained = std::max(localSustained, load.sustainedPeak);
+  }
+  bool fits(unsigned railBudget, unsigned localBudget) const {
+    return wholeRecent <= railBudget && localRecent <= localBudget &&
+           localSustained <= 4 * localBudget / 5;
+  }
+};
+
+inline BwZonePlan planBwZones(const Buffer& target, const BwLoad& full, unsigned railBudget,
+                              unsigned localBudget) {
+  constexpr uint8_t maxZones = 3;
+  BwZonePlan plan;
+  plan.include(full);
+  if (plan.fits(railBudget, localBudget)) {
+    plan.count = 1;
+    return plan;
+  }
+  for (uint8_t zones = 2; zones <= maxZones; ++zones) {
+    // Try 16-pixel lanes first to use fewer boundaries. Eight-pixel lanes
+    // spread activity more evenly across the overlapping 128-column windows.
+    for (unsigned laneBytes : {2u, 1u}) {
+      plan = {};
+      plan.count = zones;
+      plan.laneWidth = 8 * laneBytes;
+      for (size_t x = 0; x < plan.owners.size(); ++x) plan.owners[x] = (x / laneBytes) % zones;
+      for (uint8_t zone = 0; zone < zones; ++zone) {
+        BwColumnMask active;
+        for (size_t x = 0; x < active.size(); ++x) active[x] = plan.owners[x] == zone;
+        plan.include(measureBwLoad(target, 0, Width, &active));
+        if (!plan.fits(railBudget, localBudget)) break;
+      }
+      if (plan.fits(railBudget, localBudget)) return plan;
+    }
+  }
+  return {};
+}
 
 inline BwStripPlan planBwStrips(const Buffer& target, uint16_t railBudget) {
   BwStripPlan plan;

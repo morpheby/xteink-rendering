@@ -591,32 +591,61 @@ int main() {
   texture.bwSplitGuard = true;
   texture.columnStrength = texture.repairStrength = 100;
 
-  // A protected full-width 1 px rule must be drawn exactly, using the split
-  // path when one scan line exceeds the directed transition limit.
+  // An isolated protected rule has a high peak, but fits the recovery
+  // budget and must render in one pass with its exact bits.
   x4render::Buffer boiler;
   assert(boiler.allocate(x4render::Pixels));
   boiler.clear(255);
   std::memset(boiler.data() + 90 * x4render::Width, 0, x4render::Width);
   assert(!texture.startImage(29, x4render::TestImage::BwBoiler));
   texture.boilerLuma = boiler.data();
-  for (const auto mode : {x4render::BwTexture::Columns, x4render::BwTexture::Repair}) {
+  for (const auto mode : {x4render::BwTexture::Columns, x4render::BwTexture::Repair,
+                          x4render::BwTexture::OriginalZoned}) {
     texture.bwTexture = mode;
     const auto uploads = textureTransport.uploads.size();
     assert(texture.startImage(30, x4render::TestImage::BwBoiler));
-    assert(texture.stripCount() == 20 && texture.protectedFallback() == (mode == x4render::BwTexture::Repair));
-    assert(texture.renderedBwLoad().peak == 800);
-    for (size_t n = 0; n < 20; ++n) {
-      const auto& output = textureTransport.uploads[uploads + 2 * n];
-      const auto& old = textureTransport.uploads[uploads + 2 * n + 1];
-      for (uint16_t x = 0; x < x4render::Width; ++x) {
-        const bool active = size_t(x) / 40 == n;
-        assert(pixel(output, x, 89) == active && !pixel(old, x, 89));
-        assert(!pixel(output, x, 90) && pixel(old, x, 90) == active);
-      }
-      assert(texture.poll(31 + n) == (n == 19));
+    assert(texture.zoneRequested() && texture.zonePlan().count == 1 && !texture.stripCount());
+    assert(texture.protectedFallback() == (mode == x4render::BwTexture::Repair));
+    assert(texture.renderedBwLoad().peak == 800 && texture.zonePlan().wholeRecent <= texture.bwBudget);
+    const auto& output = textureTransport.uploads[uploads];
+    for (uint16_t x = 0; x < x4render::Width; ++x) {
+      assert(pixel(output, x, 89));
+      assert(!pixel(output, x, 90));
+      assert(pixel(output, x, 91));
     }
+    assert(texture.poll(31));
     assert(texture.driveCount == x4render::Pixels && !texture.settleLut(0));
   }
+
+  x4render::paintTestImage(loadProbe, x4render::TestImage::LoadStrip, 400);
+  const auto two = x4render::planBwZones(loadProbe, x4render::measureBwLoad(loadProbe), 160, 40);
+  assert(two.count == 2 && two.fits(160, 40));
+
+  // Dense switching uses three interleaved passes with the original bits.
+  texture.bwBudget = 160;
+  const auto uploads = textureTransport.uploads.size();
+  assert(texture.startImage(33, x4render::TestImage::BwChecker));
+  const auto plan = texture.zonePlan();
+  assert(plan.count == 3 && !texture.stripCount() && plan.fits(160, 40));
+  for (size_t n = 0; n < 3; ++n) {
+    const auto& output = textureTransport.uploads[uploads + 2 * n];
+    const auto& old = textureTransport.uploads[uploads + 2 * n + 1];
+    for (uint16_t y = 0; y < x4render::Height; ++y)
+      for (uint16_t x = 0; x < x4render::Width; ++x) {
+        const bool active = plan.owners[x / 8] == n;
+        const bool wanted = pixel(checkerboard, x, y);
+        assert(pixel(output, x, y) == (active && wanted));
+        assert(pixel(old, x, y) == (active && !wanted));
+      }
+    assert(textureTransport.hiddenFills[uploads + 2 * n] == 0);
+    assert(texture.poll(34 + n) == (n == 2));
+  }
+  assert(texture.driveCount == x4render::Pixels && texture.uploadedBytes() == 6 * x4render::PlaneBytes);
+  texture.bwBudget = 64;
+  const auto refused = textureTransport.uploads.size();
+  assert(!texture.startImage(40, x4render::TestImage::BwChecker));
+  assert(texture.zoneRequested() && !texture.zonePlan().count && !texture.driveCount);
+  assert(textureTransport.uploads.size() == refused);
 
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));

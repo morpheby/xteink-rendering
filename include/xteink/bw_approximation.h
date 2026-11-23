@@ -3,7 +3,8 @@
 
 namespace x4render {
 
-enum class BwTexture : uint8_t { Bayer, Columns, Repair };
+enum class BwTexture : uint8_t { Bayer, Columns, Repair, OriginalZoned };
+using BwColumnMask = std::array<uint8_t, Width / 8>;
 
 constexpr bool columnDither(uint8_t luma, uint16_t x) {
   uint8_t rank = 0;
@@ -17,6 +18,7 @@ struct BwRailLoad {
 };
 struct BwLoad {
   uint16_t peak{0}, localPeak{0}, recentPeak{0}, sustainedPeak{0};
+  uint16_t wholeRecentPeak{0};
   uint16_t firstWhite{0}, lastWhite{0};
   std::array<BwRailLoad, 2> direction{};  // White arrivals, then black arrivals.
 };
@@ -25,14 +27,17 @@ inline unsigned bwPopcount(uint8_t bits) { return __builtin_popcount(bits); }
 constexpr uint16_t bwRecovery(uint16_t previous, unsigned switches) {
   return uint16_t((235u * previous >> 8) + 21u * switches);
 }
-inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t right = Width) {
+inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t right = Width,
+                           const BwColumnMask* lanes = nullptr) {
   constexpr size_t stride = Width / 8;
   if (image.size() != PlaneBytes || left >= right || right > Width || (left & 7) || (right & 7)) return {};
   const size_t start = left / 8, stop = right / 8;
   const size_t span = std::min(size_t(128 / 8), stop - start);
   std::array<std::array<uint16_t, stride>, 2> recent{}, sustained{};
+  std::array<uint32_t, 2> wholeRecent{};
   BwLoad load;
   for (size_t x = start; x < stop; ++x) {
+    if (lanes && !(*lanes)[x]) continue;
     load.firstWhite += bwPopcount(image[x]);
     load.lastWhite += bwPopcount(image[(Height - 1) * stride + x]);
   }
@@ -40,6 +45,10 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
     std::array<std::array<uint8_t, stride>, 2> directed;
     unsigned total[2]{};
     for (size_t x = start; x < stop; ++x) {
+      if (lanes && !(*lanes)[x]) {
+        directed[0][x] = directed[1][x] = 0;
+        continue;
+      }
       const uint8_t before = image[(y - 1) * stride + x], after = image[y * stride + x];
       const uint8_t changed = before ^ after;
       directed[0][x] = bwPopcount(changed & after);
@@ -49,6 +58,8 @@ inline BwLoad measureBwLoad(const Buffer& image, uint16_t left = 0, uint16_t rig
     }
     for (size_t rail = 0; rail < 2; ++rail) {
       auto& output = load.direction[rail];
+      wholeRecent[rail] = (235u * wholeRecent[rail] >> 8) + 21u * total[rail];
+      load.wholeRecentPeak = std::max<uint16_t>(load.wholeRecentPeak, (wholeRecent[rail] + 128u) >> 8);
       output.peak = std::max<uint16_t>(output.peak, total[rail]);
       output.total += total[rail];
       unsigned sum = 0;

@@ -45,6 +45,7 @@ class Calibration {
   const uint8_t* boilerLuma{nullptr};   // Caller keeps its committed frame stable during the lab session.
   BwTexture bwTexture{BwTexture::Bayer};
   uint16_t bwBudget{80};
+  uint8_t bwLocalBudget{40};
   uint8_t columnStrength{100}, repairStrength{100};
   uint8_t columnGrain{0}, burstHeadroom{0};
   bool bwSplitGuard{true};
@@ -81,6 +82,8 @@ class Calibration {
   uint16_t stripWidth() const { return loadStripWidth(imageArgument_ & 0xFFFFu); }
   StripPattern loadPattern() const { return stripPattern(imageArgument_); }
   uint8_t stripCount() const { return stripPlan_.count; }
+  bool zoneRequested() const { return zoneRequested_; }
+  const BwZonePlan& zonePlan() const { return zonePlan_; }
   BwLoad requestedBwLoad() const { return requestedBwLoad_; }
   BwLoad renderedBwLoad() const { return renderedBwLoad_; }
   BwSourceCharge bwCharge() const { return bwCharge_; }
@@ -99,6 +102,8 @@ class Calibration {
     image_ = image;
     imageArgument_ = argument;
     stripPlan_.count = nextStrip_ = 0;
+    zonePlan_ = {};
+    zoneRequested_ = false;
     protectedFallback_ = false;
     requestedBwLoad_ = renderedBwLoad_ = {};
     bwCharge_ = {};
@@ -164,7 +169,7 @@ class Calibration {
       return !beginPass(now);
     }
     if (job_ == Job::Base) {
-      if (nextStrip_ < stripPlan_.count)
+      if (nextStrip_ < maskedPassCount())
         return !beginSplitStrip(now);
       if (factoryPreparation_) otpPrimed_ = true;
       prepare_ = false;
@@ -364,13 +369,25 @@ class Calibration {
     second_.clear(255);
     if (usesBwTexture(image_)) {
       renderBwPreview();
-      if (bwTexture != BwTexture::Bayer && bwSplitGuard && exceedsBwBudget()) {
-        if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
+      if (bwTexture != BwTexture::Bayer && bwSplitGuard) {
+        driveCount = 0;
+        requested = expanded = lastActivation_ = {};
+        preparationValid_ = settleValid_ = factoryPreparation_ = false;
+        zoneRequested_ = true;
+        zonePlan_ = planBwZones(second_, renderedBwLoad_, bwBudget, bwLocalBudget);
+        if (!zonePlan_.count) {
           fail();
-          result_ = "split guard requires Factory Tuned or Replay, prime off";
+          result_ = "source budget exceeds three zones";
           return false;
         }
-        return beginSplit(now, bwBudget / 2);
+        if (zonePlan_.count > 1) {
+          if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
+            fail();
+            result_ = "zones require Factory Tuned or Replay, prime off";
+            return false;
+          }
+          return beginMasked(now);
+        }
       }
     } else if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, imageArgument_);
@@ -541,17 +558,18 @@ class Calibration {
         protectedFallback_ = true;
       }
     }
-    renderedBwLoad_ = bwTexture == BwTexture::Bayer || protectedFallback_
+    renderedBwLoad_ = bwTexture == BwTexture::Bayer || bwTexture == BwTexture::OriginalZoned || protectedFallback_
         ? requestedBwLoad_ : measureBwLoad(second_);
   }
-  bool exceedsBwBudget() const {
-    if (renderedBwLoad_.localPeak > 3 * bwBudget / 4 || renderedBwLoad_.recentPeak > bwBudget / 2 ||
-        renderedBwLoad_.peak > bwBudget + burstHeadroom) return true;
-    return renderedBwLoad_.peak > bwBudget && !fitsBwBurst(second_, bwBudget, burstHeadroom);
+  uint8_t maskedPassCount() const {
+    return zonePlan_.count > 1 ? zonePlan_.count : stripPlan_.count;
   }
   bool beginSplit(uint32_t now, uint16_t budget) {
     stripPlan_ = planBwStrips(second_, budget);
-    if (!stripPlan_.count || !splitTarget_.allocate(PlaneBytes)) return fail();
+    return stripPlan_.count ? beginMasked(now) : fail();
+  }
+  bool beginMasked(uint32_t now) {
+    if (!splitTarget_.allocate(PlaneBytes)) return fail();
     std::memcpy(splitTarget_.data(), second_.data(), PlaneBytes);
     driveCount = 0;
     preparationValid_ = factoryPreparation_ = settleValid_ = false;
@@ -562,30 +580,40 @@ class Calibration {
   }
   bool beginSplitStrip(uint32_t now) {
     constexpr size_t stride = Width / 8;
-    const uint16_t left = nextStrip_ ? stripPlan_.ends[nextStrip_ - 1] : 0;
-    const uint16_t right = stripPlan_.ends[nextStrip_];
-    const size_t beginByte = left / 8, endByte = right / 8;
+    BwColumnMask active{};
+    if (zonePlan_.count > 1) {
+      for (size_t x = 0; x < stride; ++x) active[x] = zonePlan_.owners[x] == nextStrip_;
+    } else {
+      const auto left = nextStrip_ ? stripPlan_.ends[nextStrip_ - 1] : 0;
+      const auto right = stripPlan_.ends[nextStrip_];
+      std::fill(active.begin() + left / 8, active.begin() + right / 8, 1);
+    }
+    const size_t firstByte = std::find(active.begin(), active.end(), 1) - active.begin();
+    const size_t endByte = stride - (std::find(active.rbegin(), active.rend(), 1) - active.rbegin());
+    const uint16_t pixels = 8 * std::count(active.begin(), active.end(), 1);
     first_.clear();
     second_.clear();
     for (size_t y = 0; y < Height; ++y) {
       auto* target = second_.data() + y * stride;
       auto* previous = first_.data() + y * stride;
-      std::memcpy(target + beginByte, splitTarget_.data() + y * stride + beginByte, endByte - beginByte);
-      for (size_t x = beginByte; x < endByte; ++x)
+      for (size_t x = firstByte; x < endByte; ++x) {
+        if (!active[x]) continue;
+        target[x] = splitTarget_[y * stride + x];
         previous[x] = uint8_t(~target[x]);
+      }
     }
     // Full addressing with selector 00 outside the strip and on hidden gates.
     const Rect full{0, 0, Width, Height};
     BwSourceCharge charge;
     if (usesBwTexture(image_))
-      charge = estimateBwSourceCharge(measureBwLoad(splitTarget_, left, right),
-                                      right - left, preparationBank_, true);
+      charge = estimateBwSourceCharge(measureBwLoad(splitTarget_, 0, Width, &active),
+                                      pixels, preparationBank_, true);
     if (!upload(full) || !transport_.activate(preparationBank_, {0, 0, Width, Height}, false, now, true))
       return fail();
     bwCharge_.include(charge);
-    requested = {left, 0, uint16_t(right - left), Height};
+    requested = {uint16_t(firstByte * 8), 0, uint16_t((endByte - firstByte) * 8), Height};
     expanded = lastActivation_ = full;
-    driveCount += uint32_t(requested.width) * Height;
+    driveCount += uint32_t(pixels) * Height;
     programmedHoldRail_ = 0;
     preparationValid_ = true;
     ++nextStrip_;
@@ -673,6 +701,8 @@ class Calibration {
   TestImage image_{TestImage::Calibration};
   uint32_t imageArgument_{0}, baseCompleted_{0};
   BwStripPlan stripPlan_{};
+  BwZonePlan zonePlan_{};
+  bool zoneRequested_{false};
   BwLoad requestedBwLoad_{}, renderedBwLoad_{};
   BwSourceCharge bwCharge_{};
   bool protectedFallback_{false};

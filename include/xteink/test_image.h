@@ -22,12 +22,26 @@ constexpr bool usesRelativeGray(TestImage image) {
 
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
   if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard) {
-    // Same rail split and along-row alternation in both tests. Only the
-    // checkerboard changes the source-line polarity at each visible row.
     const bool flipRows = image == TestImage::LoadCheckerboard;
     for (uint16_t y = 0; y < Height; ++y)
       std::memset(plane.data() + size_t(y) * (Width / 8),
                   flipRows && (y & 1) ? 0x55 : 0xAA, Width / 8);
+
+    // Identical, row-balanced reference patches embedded in the load. Fixed
+    // two-pixel stripes give a middle tone using only the B/W waveform.
+    constexpr uint16_t patchX[][2] = {{16, 416}, {144, 544}, {280, 680}};
+    constexpr uint16_t patchY[] = {72, 208, 344};
+    constexpr size_t swatchBytes = 32 / 8;
+    for (size_t band = 0; band < 3; ++band) {
+      for (uint16_t y = patchY[band]; y < patchY[band] + 64; ++y) {
+        for (uint16_t x : patchX[band]) {
+          auto* swatches = plane.data() + size_t(y) * (Width / 8) + x / 8;
+          std::memset(swatches, 0x00, swatchBytes);
+          std::memset(swatches + swatchBytes, 0xCC, swatchBytes);
+          std::memset(swatches + 2 * swatchBytes, 0xFF, swatchBytes);
+        }
+      }
+    }
     return;
   }
 

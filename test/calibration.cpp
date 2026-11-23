@@ -317,8 +317,7 @@ int main() {
       assert(landscape.uploads[start + 1][i] == uint8_t(~target));
     }
   }
-  // The load controls must use the same B/W recipe and destination density.
-  // Only the phase of the second and subsequent alternating rows differs.
+  // The load controls share the B/W recipe, reference patches, and line density.
   photo.bwPreparation.programmable = true;
   const auto loadBankStart = landscape.banks.size();
   const auto loadPlaneStart = landscape.uploads.size();
@@ -327,17 +326,35 @@ int main() {
     assert(photo.startImage(9, image) && photo.poll(10));
     assert(landscape.uploads.size() == uploads + 2 && landscape.fullBw && !photo.settleLut(0));
     const auto& target = landscape.uploads[uploads];
+    const bool checkerboard = image == x4render::TestImage::LoadCheckerboard;
     for (int y = 0; y < x4render::Height; ++y) {
-      const bool flipped = image == x4render::TestImage::LoadCheckerboard && (y & 1);
-      unsigned white = 0;
+      const bool flipped = checkerboard && (y & 1);
+      int patchStart = -1;
+      if (y >= 72 && y < 136) patchStart = 16;
+      if (y >= 208 && y < 272) patchStart = 144;
+      if (y >= 344 && y < 408) patchStart = 280;
+      unsigned white = 0, switches = 0;
       for (int x = 0; x < x4render::Width; ++x) {
         const bool bit = pixel(target, x, y);
-        assert(bit == ((x % 2 == 0) != flipped));
+        bool expected = (x % 2 == 0) != flipped;
+        if (patchStart >= 0) {
+          for (int start : {patchStart, patchStart + 400}) {
+            const int offset = x - start;
+            if (offset >= 0 && offset < 96)
+              expected = offset >= 64 || (offset >= 32 && (offset / 2) % 2 == 0);
+          }
+        }
+        assert(bit == expected);
         white += bit;
-        if (y) assert((bit != pixel(target, x, y - 1)) ==
-                      (image == x4render::TestImage::LoadCheckerboard));
+        if (y) switches += bit != pixel(target, x, y - 1);
       }
       assert(white == x4render::Width / 2);
+      if (y == 72 || y == 136 || y == 208 || y == 272 || y == 344 || y == 408)
+        assert(switches == (checkerboard ? 704 : 96));
+      else if (y && checkerboard)
+        assert(switches == (patchStart >= 0 ? 608 : 800));
+      else
+        assert(switches == 0);
     }
   }
   assert(landscape.banks.size() == loadBankStart + 2 &&

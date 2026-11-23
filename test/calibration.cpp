@@ -27,7 +27,7 @@ struct Fake {
   Window activation{};
   std::vector<std::vector<uint8_t>> uploads;
   std::vector<x4render::LutBank> banks;
-  std::vector<uint8_t> commands;
+  std::vector<uint8_t> commands, hiddenFills;
   std::vector<uint8_t> oldRam, newRam;
   void reset() {
     state = Status::Off;
@@ -44,9 +44,10 @@ struct Fake {
     return true;
   }
   Result poll(uint32_t) { return result; }
-  bool upload(uint8_t command, Plane p, Window w, uint8_t = 0) {
+  bool upload(uint8_t command, Plane p, Window w, uint8_t hiddenFill = 0) {
     assert(p.size == 48000);
     commands.push_back(command);
+    hiddenFills.push_back(hiddenFill);
     // Model a controller that advances OLD when NEW transmission begins.
     // Explicit OLD must be written afterward; absolute B/W must tolerate OLD.
     if (command == 0x13) { oldRam = newRam; newRam.assign(p.data,p.data+p.size); }
@@ -413,6 +414,53 @@ int main() {
       photo.bwPreparation.programmable = false;
     }
   }
+
+  // An all-white/all-black alternating row puts every transition on one rail.
+  x4render::Buffer oneDirection;
+  assert(oneDirection.allocate(x4render::PlaneBytes));
+  for (int y = 0; y < x4render::Height; ++y)
+    std::memset(oneDirection.data() + y * 100, y % 2 ? 255 : 0, 100);
+  const auto unbalanced = x4render::planBwStrips(oneDirection, 80);
+  assert(unbalanced.count == 10);
+  for (unsigned n = 0; n < unbalanced.count; ++n)
+    assert(unbalanced.ends[n] == (n + 1) * 80);
+
+  Fake splitTransport;
+  splitTransport.state = Fake::Status::Ready;
+  x4render::Calibration<Fake> split(splitTransport);
+  assert(split.allocate());
+  assert(!split.startImage(17, x4render::TestImage::SplitCheckerboard, 80));
+  split.bwPreparation.programmable = true;
+  const auto source = x4render::preparation(split.bwPreparation);
+  split.factoryDerivedBw = source;
+  assert(split.startImage(18, x4render::TestImage::SplitCheckerboard, 80));
+  assert(split.stripCount() == 5 && splitTransport.otpCalls == 0);
+  const auto& checkerboard = landscape.uploads[loadPlaneStart + 2];
+  for (unsigned n = 0; n < 5; ++n) {
+    const size_t upload = 2 * n;
+    assert(splitTransport.uploads.size() == upload + 2 && splitTransport.fullBw && !splitTransport.vertical);
+    assert(splitTransport.commands[upload] == 0x13 && splitTransport.commands[upload + 1] == 0x10);
+    assert(splitTransport.hiddenFills[upload] == 0 && splitTransport.hiddenFills[upload + 1] == 0);
+    const auto& bank = splitTransport.banks[n];
+    for (unsigned row = 0; row < 5; ++row)
+      assert(bank[row] == source[row == x4render::Row[0] || row == x4render::Row[3] ? 0 : row]);
+    for (int y = 0; y < x4render::Height; ++y) {
+      for (int x = 0; x < x4render::Width; ++x) {
+        const bool active = unsigned(x) / 160 == n;
+        const bool target = pixel(checkerboard, x, y);
+        assert(pixel(splitTransport.uploads[upload], x, y) == (active && target));
+        assert(pixel(splitTransport.uploads[upload + 1], x, y) == (active && !target));
+      }
+    }
+    assert(split.poll(19 + n) == (n == 4));
+  }
+  assert(!split.busy() && split.cycles == 1 && split.driveCount == x4render::Pixels);
+  assert(!split.settleLut(0) && split.uploadedBytes() == 10 * x4render::PlaneBytes);
+  assert(split.startImage(25, x4render::TestImage::SplitCheckerboard, 80));
+  splitTransport.result = Fake::Result::CompletionTimeout;
+  assert(split.poll(26) && !split.busy() && split.cycles == 1);
+  assert(splitTransport.banks.size() == 6);
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

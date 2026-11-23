@@ -1,4 +1,5 @@
 #pragma once
+#include "bw_strips.h"
 #include "rendering.h"
 #include "waveform.h"
 #include "waveform_inspection.h"
@@ -45,15 +46,26 @@ class Calibration {
     return startOperation(now, prepare, rotate, conditioning,
                           TestImage::Calibration, 0);
   }
-  // LoadStrip takes a width in columns. Artwork with a random seed keeps the
-  // same argument and replay behavior.
+  // LoadStrip takes a width, SplitCheckerboard a per-rail budget, and random
+  // artwork a seed. Repeat Image replays the same argument.
   bool startImage(uint32_t now, TestImage image, uint32_t argument = 0) {
-    if (image < TestImage::White || image > TestImage::LoadStrip) return false;
+    if (busy() || image < TestImage::White || image > TestImage::SplitCheckerboard) return false;
+    if (image == TestImage::SplitCheckerboard) {
+      if (!bwPreparation.programmable || !factoryDerivedBw || bwPreparation.factoryPrime) {
+        result_ = "split requires Factory Tuned or Replay, prime off";
+        return false;
+      }
+      if (argument < 32 || argument > 160) {
+        result_ = "split rail budget must be 32 to 160";
+        return false;
+      }
+    }
     return startOperation(now, true, false, false, image, argument);
   }
   TestImage image() const { return image_; }
   uint32_t imageSeed() const { return imageArgument_; }
   uint16_t stripWidth() const { return loadStripWidth(imageArgument_); }
+  uint8_t stripCount() const { return stripPlan_.count; }
 
  private:
   bool startOperation(uint32_t now, bool prepare, bool rotate, bool conditioning,
@@ -65,6 +77,7 @@ class Calibration {
     conditioning_ = conditioning;
     image_ = image;
     imageArgument_ = argument;
+    stripPlan_.count = nextStrip_ = 0;
     pauseMs_ = bwPreparation.pauseMs;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
@@ -127,6 +140,8 @@ class Calibration {
       return !beginPass(now);
     }
     if (job_ == Job::Base) {
+      if (image_ == TestImage::SplitCheckerboard && nextStrip_ < stripPlan_.count)
+        return !beginSplitStrip(now);
       if (factoryPreparation_) otpPrimed_ = true;
       prepare_ = false;
       if (image_ != TestImage::Calibration && !usesRelativeGray(image_))
@@ -317,6 +332,18 @@ class Calibration {
   bool beginPass(uint32_t now) {
     if (!prepare_) return beginSettle(now);
     references_ = false;
+    if (image_ == TestImage::SplitCheckerboard) {
+      paintTestImage(second_, image_, imageArgument_);
+      stripPlan_ = planBwStrips(second_, uint16_t(imageArgument_));
+      if (!stripPlan_.count) return fail();
+      driveCount = 0;
+      preparationValid_ = factoryPreparation_ = settleValid_ = false;
+      preparationBank_ = *factoryDerivedBw;
+      // The verified factory-derived VCOM row is code 0 throughout and
+      // carries the exact timing. Use it for equal-bit (unselected) pixels.
+      preparationBank_[Row[0]] = preparationBank_[Row[3]] = preparationBank_[0];
+      return beginSplitStrip(now);
+    }
     first_.clear(255);
     second_.clear(255);
     if (image_ != TestImage::Calibration) {
@@ -433,6 +460,34 @@ class Calibration {
     job_ = Job::Base;
     return true;
   }
+  bool beginSplitStrip(uint32_t now) {
+    constexpr size_t stride = Width / 8;
+    const uint16_t left = nextStrip_ ? stripPlan_.ends[nextStrip_ - 1] : 0;
+    const uint16_t right = stripPlan_.ends[nextStrip_];
+    const size_t beginByte = left / 8, endByte = right / 8;
+    if (nextStrip_) paintTestImage(second_, image_, imageArgument_);
+    first_.clear();
+    for (size_t y = 0; y < Height; ++y) {
+      auto* target = second_.data() + y * stride;
+      auto* previous = first_.data() + y * stride;
+      std::memset(target, 0, beginByte);
+      std::memset(target + endByte, 0, stride - endByte);
+      for (size_t x = beginByte; x < endByte; ++x)
+        previous[x] = uint8_t(~target[x]);
+    }
+    // Full addressing with selector 00 outside the strip and on hidden gates.
+    const Rect full{0, 0, Width, Height};
+    if (!upload(full) || !transport_.activate(preparationBank_, {0, 0, Width, Height}, false, now, true))
+      return fail();
+    requested = {left, 0, uint16_t(right - left), Height};
+    expanded = lastActivation_ = full;
+    driveCount += uint32_t(requested.width) * Height;
+    programmedHoldRail_ = 0;
+    preparationValid_ = true;
+    ++nextStrip_;
+    job_ = Job::Base;
+    return true;
+  }
   bool upload(Rect r, bool bw = false) {
     typename Transport::Window w{r.x, r.y, r.width, r.height};
     // Match the proven driver. A NEW write may alter the controller's OLD
@@ -513,6 +568,8 @@ class Calibration {
   bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
   uint32_t imageArgument_{0}, baseCompleted_{0};
+  BwStripPlan stripPlan_{};
+  uint8_t nextStrip_{0};
   uint16_t pauseMs_{0};
   uint8_t rotation_{0};
   uint32_t started_{0}, bytesAtStart_{0}, uploaded_{0};

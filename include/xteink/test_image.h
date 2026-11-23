@@ -6,7 +6,7 @@ namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
                                 LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp,
                                 RampBase, RampInverse, LoadStripes, LoadCheckerboard,
-                                LoadStrip };
+                                LoadStrip, SplitCheckerboard };
 
 // Leave space for a 96-column reference triplet and a 16-column margin on
 // each side. Steps of 16 keep both edges of the centered strip byte aligned.
@@ -32,6 +32,7 @@ constexpr bool usesRelativeGray(TestImage image) {
 }
 
 inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
+  if (image == TestImage::SplitCheckerboard) image = TestImage::LoadCheckerboard;
   if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard ||
       image == TestImage::LoadStrip) {
     // Identical, row-balanced reference patches embedded in the load. Fixed

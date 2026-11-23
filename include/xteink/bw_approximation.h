@@ -1,6 +1,8 @@
 #pragma once
 #include "rendering.h"
 
+#include <type_traits>
+
 namespace x4render {
 
 enum class BwTexture : uint8_t { Bayer, Columns, Repair, OriginalZoned };
@@ -202,10 +204,11 @@ inline bool fitsBwBurst(const Buffer& image, unsigned budget, unsigned headroom)
 
 // Repair in panel scan order. Only a desired transition can be suppressed.
 // The callback grades a pixel 0..11; grades 8..11 are protected marks.
+// An optional tile constraint can discard proposed edits before accounting.
 // Return the number of protected marks the budget forced us to change.
-template <class Priority>
+template <class Priority, class Constrain = std::nullptr_t>
 uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority,
-                      unsigned strength = 100, unsigned headroom = 0) {
+                      unsigned strength = 100, unsigned headroom = 0, Constrain applyTile = nullptr) {
   using namespace bw_detail;
   constexpr size_t stride = Width / 8;
   if (!strength) return 0;
@@ -241,14 +244,12 @@ uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority,
       const unsigned drop = ((unsigned(excess) * strength) + 99) / 100;
       suppress(room, std::min(whites, drop), std::min(blacks, drop), phase(y));
     }
-    if (headroom) {
-      burst.consume(0, total(room[0]));
-      burst.consume(1, total(room[1]));
-    }
     for (size_t tile = 0; tile < TileCount; ++tile) {
-      for (size_t rail = 0; rail < 2; ++rail)
-        recent[rail][tile] = bwRecovery(recent[rail][tile], room[rail][tile]);
-      if (room[0][tile] == requested[0][tile] && room[1][tile] == requested[1][tile]) continue;
+      if (room[0][tile] == requested[0][tile] && room[1][tile] == requested[1][tile]) {
+        for (size_t rail = 0; rail < 2; ++rail)
+          recent[rail][tile] = bwRecovery(recent[rail][tile], room[rail][tile]);
+        continue;
+      }
       const size_t start = tile * TileBytes;
       Counts<TileBytes> wanted[2], sub[2];
       for (size_t i = 0; i < TileBytes; ++i) {
@@ -258,18 +259,38 @@ uint32_t repairBwRows(Buffer& image, unsigned budget, Priority priority,
         for (size_t rail = 0; rail < 2; ++rail) sub[rail][i] = bwPopcount(wanted[rail][i]);
       }
       suppress(sub, requested[0][tile] - room[0][tile], requested[1][tile] - room[1][tile], phase(y, tile));
+      Counts<TileBytes> next;
       for (size_t i = 0; i < TileBytes; ++i) {
         const size_t x = start + i;
         auto rank = [&](unsigned bit) { return priority(uint16_t(x * 8 + bit), uint16_t(y)); };
         const auto offset = phase(y, x);
         const uint8_t white = retain(wanted[0][i], sub[0][i], offset, rank);
         const uint8_t black = retain(wanted[1][i], sub[1][i], offset, rank);
-        const uint8_t next = (before[x] | white) & ~black;
-        const uint8_t edited = row[x] ^ next;
-        for (unsigned bit = 0; bit < 8; ++bit)
-          if ((edited & (0x80u >> bit)) && rank(bit) >= 8) ++protectedEdits;
-        row[x] = next;
+        next[i] = (before[x] | white) & ~black;
       }
+      if constexpr (!std::is_same_v<Constrain, std::nullptr_t>) {
+        applyTile(y, start, row + start, next);
+        // Budget the transitions actually left after unmatched edits were discarded.
+        room[0][tile] = room[1][tile] = 0;
+        for (size_t i = 0; i < TileBytes; ++i) {
+          const uint8_t changed = before[start + i] ^ next[i];
+          room[0][tile] += bwPopcount(changed & next[i]);
+          room[1][tile] += bwPopcount(changed & before[start + i]);
+        }
+      }
+      for (size_t rail = 0; rail < 2; ++rail)
+        recent[rail][tile] = bwRecovery(recent[rail][tile], room[rail][tile]);
+      for (size_t i = 0; i < TileBytes; ++i) {
+        const size_t x = start + i;
+        const uint8_t edited = row[x] ^ next[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+          if ((edited & (0x80u >> bit)) && priority(uint16_t(x * 8 + bit), uint16_t(y)) >= 8) ++protectedEdits;
+        row[x] = next[i];
+      }
+    }
+    if (headroom) {
+      burst.consume(0, total(room[0]));
+      burst.consume(1, total(room[1]));
     }
   }
   return protectedEdits;

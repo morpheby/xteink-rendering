@@ -648,7 +648,7 @@ int main() {
   assert(textureTransport.uploads.size() == refused);
 
   texture.bwBudget = 160;
-  texture.grayColumns = true;
+  texture.grayDither = x4render::GrayDither::Columns;
   texture.grayZoneGuard = true;
   const auto grayUploads = textureTransport.uploads.size();
   assert(texture.startImage(50, x4render::TestImage::LinearRamp));
@@ -669,6 +669,47 @@ int main() {
         assert(pixel(textureTransport.uploads[settle], x, y) == bool(shade.selector & 1));
         assert(pixel(textureTransport.uploads[settle + 1], x, y) == bool(shade.selector & 2));
       });
+
+  texture.grayDither = x4render::GrayDither::Repair;
+  texture.bwBudget = 96;
+  texture.repairStrength = 30;
+  texture.burstHeadroom = 80;
+  graySettings.columnDither = false;
+  for (auto image : {x4render::TestImage::LinearRamp, x4render::TestImage::NeighborSweep}) {
+    const auto uploads = textureTransport.uploads.size();
+    assert(texture.startImage(60, image));
+    const auto zones = texture.zonePlan();
+    assert(zones.count == 2);
+    assert(texture.renderedBwLoad().wholeRecentPeak < texture.requestedBwLoad().wholeRecentPeak);
+    for (uint8_t pass = 0; pass < zones.count; ++pass) assert(!texture.poll(61 + pass));
+    assert(texture.poll(64));
+    const auto settle = uploads + 2 * zones.count;
+    assert(textureTransport.uploads.size() == settle + 2);
+    std::array<std::array<int, 17>, 7> coverageDelta{};
+    unsigned changed = 0;
+    x4render::paintRelativeMixes(image, 0, graySettings, [&](uint16_t x, uint16_t y, x4render::ShadeMix mix) {
+      const auto start = uploads + 2 * zones.owners[x / 8];
+      const auto desired = mix.sample(x, y, false);
+      const bool base = pixel(textureTransport.uploads[start], x, y);
+      auto shade = desired;
+      if (base != bool(desired.base)) {
+        assert(mix.canSwapBase());
+        ++changed;
+        shade = base == bool(mix.dark.base) ? mix.dark : mix.light;
+        if (image == x4render::TestImage::NeighborSweep) {
+          const unsigned row = (y - x4render::NeighborTop) / x4render::NeighborRowHeight;
+          const unsigned step = ((x + 1) * 17 - 1) / x4render::Width;
+          assert(row < coverageDelta.size());
+          coverageDelta[row][step] += shade.selector == mix.light.selector && shade.base == mix.light.base ? 1 : -1;
+        }
+      }
+      assert(pixel(textureTransport.uploads[settle], x, y) == bool(shade.selector & 1));
+      assert(pixel(textureTransport.uploads[settle + 1], x, y) == bool(shade.selector & 2));
+    });
+    assert(changed);
+    for (const auto& row : coverageDelta)
+      for (int delta : row) assert(!delta);
+  }
 
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));

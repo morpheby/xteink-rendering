@@ -10,6 +10,8 @@
 #include <optional>
 
 namespace x4render {
+enum class GrayDither : uint8_t { Bayer, Columns, Repair };
+
 // Display-independent diagnostic layout. All drawing is into two reusable
 // packed WIRE planes; nothing may mutate them while the transport is busy.
 template <class Transport>
@@ -49,7 +51,7 @@ class Calibration {
   uint8_t columnStrength{100}, repairStrength{100};
   uint8_t columnGrain{0}, burstHeadroom{0};
   bool bwSplitGuard{true};
-  bool grayColumns{false};
+  GrayDither grayDither{GrayDither::Bayer};
   bool grayZoneGuard{false};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
@@ -107,6 +109,7 @@ class Calibration {
     zonePlan_ = {};
     zoneRequested_ = false;
     protectedFallback_ = false;
+    repairedGray_ = false;
     requestedBwLoad_ = renderedBwLoad_ = {};
     bwCharge_ = {};
     pauseMs_ = bwPreparation.pauseMs;
@@ -342,8 +345,73 @@ class Calibration {
     Settings settings;
     settings.mode = Mode::DitherSettle;
     settings.palette = imagePalette;
-    settings.columnDither = grayColumns;
+    settings.columnDither = grayDither == GrayDither::Columns;
     return settings;
+  }
+  bool paintGrayBase() {
+    if (!imagePalette.valid()) return false;
+    repairedGray_ = grayDither == GrayDither::Repair && repairStrength;
+    if (repairedGray_) {
+      if (!grayMixGroups_.allocate(Pixels / 2)) return false;
+      grayMixGroups_.clear();
+    }
+    const auto settings = imageSettings();
+    paintRelativeMixes(image_, imageArgument_, settings, [&](uint16_t x, uint16_t y, ShadeMix mix) {
+      const size_t i = size_t(y) * Width + x;
+      packedBit(second_, i, mix.sample(x, y, settings.columnDither).base);
+      if (repairedGray_) {
+        const uint8_t group = mix.canSwapBase() ? relativeShadeId(mix.dark) + 1 : 0;
+        const unsigned shift = 4 * (i % 2);
+        auto& byte = grayMixGroups_[i / 2];
+        byte = (byte & ~(15u << shift)) | (group << shift);
+      }
+    });
+    return true;
+  }
+  uint8_t grayMixGroup(size_t i) const {
+    return (grayMixGroups_[i / 2] >> (4 * (i % 2))) & 15;
+  }
+  void repairGrayBase() {
+    auto priority = [this](uint16_t x, uint16_t y) {
+      return grayMixGroup(size_t(y) * Width + x) ? 0 : 11;
+    };
+    auto balance = [this](unsigned y, size_t start, const uint8_t* original, auto& next) {
+      constexpr unsigned tilePixels = 8 * bw_detail::TileBytes;
+      const unsigned left = 8 * start;
+      const size_t row = size_t(y) * Width + left;
+      const bool swatches = image_ == TestImage::NeighborSweep;
+      auto group = [&](unsigned bit) {
+        const auto pair = grayMixGroup(row + bit);
+        if (!pair || !swatches) return unsigned(pair);
+        // Inverse of neighborColumn(): matching candidates stay in one swatch.
+        const unsigned step = ((left + bit + 1) * 17 - 1) / Width;
+        return 16 * step + pair;
+      };
+      uint32_t lighten = 0, darken = 0;
+      for (unsigned byte = 0; byte < next.size(); ++byte) {
+        const uint8_t changed = original[byte] ^ next[byte];
+        for (unsigned bit = 0; bit < 8; ++bit) {
+          const uint8_t mask = 0x80u >> bit;
+          const unsigned offset = 8 * byte + bit;
+          if (!(changed & mask) || !group(offset)) continue;
+          auto& candidates = next[byte] & mask ? lighten : darken;
+          candidates |= uint32_t(1) << offset;
+        }
+        next[byte] = original[byte];
+      }
+      for (unsigned a = 0; a < tilePixels && darken; ++a) {
+        if (!(lighten & (uint32_t(1) << a))) continue;
+        for (uint32_t matches = darken; matches; matches &= matches - 1) {
+          const unsigned b = __builtin_ctz(matches);
+          if (group(a) != group(b)) continue;
+          next[a / 8] |= 0x80u >> (a % 8);
+          next[b / 8] &= ~(0x80u >> (b % 8));
+          darken &= ~(uint32_t(1) << b);
+          break;
+        }
+      }
+    };
+    repairBwRows(second_, bwBudget, priority, repairStrength, burstHeadroom, balance);
   }
   void shadeChartLabels() {
     text(8, 3, "NEIGHBOR MIXES - STEP IS LIGHTER PIXELS PER 16", 2);
@@ -374,12 +442,7 @@ class Calibration {
       renderBwPreview();
     } else if (image_ != TestImage::Calibration) {
       paintTestImage(second_, image_, imageArgument_);
-      if (usesRelativeGray(image_) || isRampImage(image_)) {
-        if (!imagePalette.valid()) return fail();
-        paintRelativeShades(image_, imageArgument_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
-          packedBit(second_, size_t(y) * Width + x, shade.base);
-        });
-      }
+      if (grayPreparationImage(image_) && !paintGrayBase()) return fail();
       if (image_ == TestImage::NeighborSweep) shadeChartLabels();
       if (isRampImage(image_)) {
         text(10, 8, "A BLACK TO C WHITE - LINEAR INPUT RAMP", 2);
@@ -446,14 +509,20 @@ class Calibration {
     text(550, 397, "GRAY REF", 1);
     text(18, 466, "REPEAT HOLDS REFERENCES - REBUILD RESETS STARTS", 1);
     }
+    if (repairedGray_) {
+      requestedBwLoad_ = measureBwLoad(second_);
+      repairGrayBase();
+    }
     // Unknown physical history must not be represented as "OLD was white".
     // Match the normal driver's scrub: every requested pixel transitions.
     for (size_t i = 0; i < first_.size(); ++i) {
       if (image_ == TestImage::RampInverse) second_[i] = uint8_t(~second_[i]);
       first_[i] = uint8_t(~second_[i]);
     }
-    if (grayPreparationImage(image_) || image_ == TestImage::LoadStrip)
-      requestedBwLoad_ = renderedBwLoad_ = measureBwLoad(second_);
+    if (grayPreparationImage(image_) || image_ == TestImage::LoadStrip) {
+      renderedBwLoad_ = measureBwLoad(second_);
+      if (!repairedGray_) requestedBwLoad_ = renderedBwLoad_;
+    }
     if ((grayZoneGuard && grayPreparationImage(image_)) ||
         (bwSplitGuard && usesBwTexture(image_) && bwTexture != BwTexture::Bayer)) {
       driveCount = 0;
@@ -475,6 +544,7 @@ class Calibration {
         return beginMasked(now);
       }
     }
+    if (repairedGray_ && usesRelativeGray(image_) && !savePreparedTarget()) return fail();
     if (!upload({0, 0, 800, 480}, true)) return fail();
     if (bwPreparation.programmable && bwPreparation.factoryPrime && !otpPrimed_) {
       if (!transport_.activateOtp(false, now)) return fail();
@@ -572,9 +642,13 @@ class Calibration {
     stripPlan_ = planBwStrips(second_, budget);
     return stripPlan_.count ? beginMasked(now) : fail();
   }
-  bool beginMasked(uint32_t now) {
-    if (!splitTarget_.allocate(PlaneBytes)) return fail();
+  bool savePreparedTarget() {
+    if (!splitTarget_.allocate(PlaneBytes)) return false;
     std::memcpy(splitTarget_.data(), second_.data(), PlaneBytes);
+    return true;
+  }
+  bool beginMasked(uint32_t now) {
+    if (!savePreparedTarget()) return fail();
     driveCount = 0;
     preparationValid_ = factoryPreparation_ = settleValid_ = false;
     preparationBank_ = *factoryDerivedBw;
@@ -645,9 +719,13 @@ class Calibration {
     requested = {};
     const bool fullImage = usesRelativeGray(image_);
     if (fullImage) {
-      paintRelativeShades(image_, imageArgument_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
-        if (!shade.selector) return;
+      const auto settings = imageSettings();
+      paintRelativeMixes(image_, imageArgument_, settings, [&](uint16_t x, uint16_t y, ShadeMix mix) {
         const size_t index = size_t(y) * Width + x;
+        auto shade = mix.sample(x, y, settings.columnDither);
+        if (repairedGray_ && mix.canSwapBase())
+          shade = packedBit(splitTarget_, index) == bool(mix.dark.base) ? mix.dark : mix.light;
+        if (!shade.selector) return;
         packedBit(first_, index, shade.selector & 2);
         packedBit(second_, index, shade.selector & 1);
         ++driveCount;
@@ -698,7 +776,7 @@ class Calibration {
   uint32_t waveformId_{0};
   Rect lastActivation_{};
   Transport& transport_;
-  Buffer first_, second_, splitTarget_;
+  Buffer first_, second_, splitTarget_, grayMixGroups_;
   Job job_{Job::Idle};
   bool references_{false}, prepare_{true}, conditioning_{false};
   bool otpPrimed_{false};
@@ -710,6 +788,7 @@ class Calibration {
   BwLoad requestedBwLoad_{}, renderedBwLoad_{};
   BwSourceCharge bwCharge_{};
   bool protectedFallback_{false};
+  bool repairedGray_{false};
   uint8_t nextStrip_{0};
   uint16_t pauseMs_{0};
   uint8_t rotation_{0};

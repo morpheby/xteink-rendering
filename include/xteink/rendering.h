@@ -168,18 +168,32 @@ inline uint8_t coverageCount(unsigned distance, unsigned interval, const Coverag
   }
   return nearest;
 }
-inline Shade quantize(uint8_t luma, uint16_t x, uint16_t y, const Settings& s) {
+struct ShadeMix {
+  Shade dark, light;
+  uint8_t lightCount;
+
+  Shade sample(uint16_t x, uint16_t y, bool columns) const {
+    return mixNeighbors(dark, light, lightCount, x, y, columns);
+  }
+  bool canSwapBase() const {
+    return lightCount > 0 && lightCount < 16 && dark.base != light.base;
+  }
+};
+inline ShadeMix quantizeMix(uint8_t luma, const Settings& s) {
   if (s.mode == Mode::BwDither) {
-    const bool white = unsigned(luma) * 32 > unsigned(2 * ditherRank(x, y, s.columnDither) + 1) * 255;
-    return {uint8_t(white ? 255 : 0), uint8_t(white), 0};
+    const uint8_t lightCount = uint8_t((32u * luma + 254) / 510);
+    return {{0, 0, 0}, {255, 1, 0}, lightCount};
   }
   for (uint8_t i = 1; i < s.palette.count; ++i) {
     const auto a = s.palette.shades[i - 1], b = s.palette.shades[i];
     if (luma <= b.luma)
-      return mixNeighbors(a, b, coverageCount(luma - a.luma, b.luma - a.luma,
-                                               s.palette.coverage[i - 1]), x, y, s.columnDither);
+      return {a, b, coverageCount(luma - a.luma, b.luma - a.luma, s.palette.coverage[i - 1])};
   }
-  return s.palette.shades[s.palette.count - 1];
+  const auto last = s.palette.shades[s.palette.count - 1];
+  return {last, last, 0};
+}
+inline Shade quantize(uint8_t luma, uint16_t x, uint16_t y, const Settings& s) {
+  return quantizeMix(luma, s).sample(x, y, s.columnDither);
 }
 inline bool same(Shade a, Shade b) {
   return a.base == b.base && a.selector == b.selector;

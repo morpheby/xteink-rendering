@@ -262,17 +262,18 @@ inline Palette provisionalRelativePalette() {
 // Identical coordinates and quantizer for both passes. Each emitted shade
 // carries its B/W starting pixel AND the matching settle selector.
 template <class Emit>
-void paintRelativeShades(TestImage image, uint32_t seed, const Settings& settings, Emit emit) {
+void paintRelativeMixes(TestImage image, uint32_t seed, const Settings& settings, Emit emit) {
   auto patch = [&](uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t luma) {
+    const auto mix = quantizeMix(luma, settings);
     for (uint16_t py = y; py < y + h; ++py)
       for (uint16_t px = x; px < x + w; ++px)
-        emit(px, py, quantize(luma, px, py, settings));
+        emit(px, py, mix);
   };
   switch (image) {
     case TestImage::LandscapeGray:
       for (uint16_t y = 20; y < 460; ++y)
         for (uint16_t x = 0; x < Width; ++x)
-          emit(x, y, quantize(landscapeLuma(uint32_t(y) * Width + x), x, y, settings));
+          emit(x, y, quantizeMix(landscapeLuma(uint32_t(y) * Width + x), settings));
       break;
     case TestImage::Reference:
       for (uint8_t i = 0; i < 12; ++i)
@@ -300,34 +301,40 @@ void paintRelativeShades(TestImage image, uint32_t seed, const Settings& setting
         if (relativeShadeId(shade) == 6) right = shade.luma;
       }
       Settings bw;
-      bw.columnDither = settings.columnDither;
       for (uint16_t x = 0; x < Width; ++x) {
         const uint8_t luma = uint8_t((unsigned(left) * (Width - 1 - x) +
                                       unsigned(right) * x + (Width - 1) / 2) / (Width - 1));
-        for (uint16_t y = 76; y < 258; ++y)
-          emit(x, y, quantize(luma, x, y, settings));
-        for (uint16_t y = 278; y < 460; ++y)
-          emit(x, y, quantize(luma, x, y, bw));
+        const auto grayMix = quantizeMix(luma, settings), bwMix = quantizeMix(luma, bw);
+        for (uint16_t y = 76; y < 258; ++y) emit(x, y, grayMix);
+        for (uint16_t y = 278; y < 460; ++y) emit(x, y, bwMix);
       }
       break;
     }
     case TestImage::NeighborSweep:
       // One raw sample of every endpoint, in fixed identity order for sorting.
-      for (uint8_t raw = 0; raw < 8; ++raw)
+      for (uint8_t raw = 0; raw < 8; ++raw) {
+        const auto shade = relativeShade(raw, 0);
         for (uint16_t y = 28; y < 56; ++y)
           for (uint16_t x = raw * 100; x < (raw + 1) * 100; ++x)
-            emit(x, y, relativeShade(raw, 0));
+            emit(x, y, ShadeMix{shade, shade, 0});
+      }
       for (uint8_t pair = 0; pair + 1 < settings.palette.count; ++pair) {
         const auto dark = settings.palette.shades[pair], light = settings.palette.shades[pair + 1];
         const uint16_t top = NeighborTop + pair * NeighborRowHeight;
         for (uint8_t step = 0; step <= 16; ++step)
           for (uint16_t y = top; y < top + NeighborSwatchHeight; ++y)
             for (uint16_t x = neighborColumn(step); x < neighborColumn(step + 1); ++x)
-              emit(x, y, mixNeighbors(dark, light, step, x, y, settings.columnDither));
+              emit(x, y, ShadeMix{dark, light, step});
       }
       break;
     default:
       break;
   }
+}
+template <class Emit>
+void paintRelativeShades(TestImage image, uint32_t seed, const Settings& settings, Emit emit) {
+  paintRelativeMixes(image, seed, settings, [&](uint16_t x, uint16_t y, ShadeMix mix) {
+    emit(x, y, mix.sample(x, y, settings.columnDither));
+  });
 }
 }  // namespace x4render

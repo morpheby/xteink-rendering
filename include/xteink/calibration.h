@@ -45,23 +45,26 @@ class Calibration {
     return startOperation(now, prepare, rotate, conditioning,
                           TestImage::Calibration, 0);
   }
-  bool startImage(uint32_t now, TestImage image, uint32_t seed = 0) {
-    if (image < TestImage::White || image > TestImage::LoadCheckerboard) return false;
-    return startOperation(now, true, false, false, image, seed);
+  // LoadStrip takes a width in columns. Artwork with a random seed keeps the
+  // same argument and replay behavior.
+  bool startImage(uint32_t now, TestImage image, uint32_t argument = 0) {
+    if (image < TestImage::White || image > TestImage::LoadStrip) return false;
+    return startOperation(now, true, false, false, image, argument);
   }
   TestImage image() const { return image_; }
-  uint32_t imageSeed() const { return seed_; }
+  uint32_t imageSeed() const { return imageArgument_; }
+  uint16_t stripWidth() const { return loadStripWidth(imageArgument_); }
 
  private:
   bool startOperation(uint32_t now, bool prepare, bool rotate, bool conditioning,
-                      TestImage image, uint32_t seed) {
+                      TestImage image, uint32_t argument) {
     if (busy() || !first_.data() || !bwPreparation.valid() || holdRail > 3)
       return false;
     for (auto p : parameters)
       if (!p.valid() || p.repeats != parameters[0].repeats) return false;
     conditioning_ = conditioning;
     image_ = image;
-    seed_ = seed;
+    imageArgument_ = argument;
     pauseMs_ = bwPreparation.pauseMs;
     prepare_ = prepare || !references_;
     if (conditioning) prepare_ = false;
@@ -317,10 +320,10 @@ class Calibration {
     first_.clear(255);
     second_.clear(255);
     if (image_ != TestImage::Calibration) {
-      paintTestImage(second_, image_, seed_);
+      paintTestImage(second_, image_, imageArgument_);
       if (usesRelativeGray(image_) || isRampImage(image_)) {
         if (!imagePalette.valid()) return fail();
-        paintRelativeShades(image_, seed_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
+        paintRelativeShades(image_, imageArgument_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
           packedBit(second_, size_t(y) * Width + x, shade.base);
         });
       }
@@ -335,7 +338,7 @@ class Calibration {
         text(20, 12, image_ == TestImage::Reference ? "X4 KNOWN REFERENCE"
                                                  : "X4 RANDOM EDGES", 3);
         char label[40];
-        std::snprintf(label, sizeof(label), "SEED %08lX", (unsigned long)seed_);
+        std::snprintf(label, sizeof(label), "SEED %08lX", (unsigned long)imageArgument_);
         text(20, 452, label, 2);
       }
       if (image_ == TestImage::LandscapeDither || image_ == TestImage::LandscapeGray) {
@@ -451,7 +454,7 @@ class Calibration {
     requested = {};
     const bool fullImage = usesRelativeGray(image_);
     if (fullImage) {
-      paintRelativeShades(image_, seed_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
+      paintRelativeShades(image_, imageArgument_, imageSettings(), [this](uint16_t x, uint16_t y, Shade shade) {
         if (!shade.selector) return;
         const size_t index = size_t(y) * Width + x;
         packedBit(first_, index, shade.selector & 2);
@@ -509,7 +512,7 @@ class Calibration {
   bool references_{false}, prepare_{true}, conditioning_{false};
   bool otpPrimed_{false};
   TestImage image_{TestImage::Calibration};
-  uint32_t seed_{0}, baseCompleted_{0};
+  uint32_t imageArgument_{0}, baseCompleted_{0};
   uint16_t pauseMs_{0};
   uint8_t rotation_{0};
   uint32_t started_{0}, bytesAtStart_{0}, uploaded_{0};

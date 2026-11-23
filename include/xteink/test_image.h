@@ -5,7 +5,18 @@
 namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
                                 LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp,
-                                RampBase, RampInverse, LoadStripes, LoadCheckerboard };
+                                RampBase, RampInverse, LoadStripes, LoadCheckerboard,
+                                LoadStrip };
+
+// Leave space for a 96-column reference triplet and a 16-column margin on
+// each side. Steps of 16 keep both edges of the centered strip byte aligned.
+constexpr uint16_t LoadSwatchWidth = 32;
+constexpr uint16_t LoadReferenceInset = 16;
+constexpr uint16_t LoadReferenceWidth = 3 * LoadSwatchWidth;
+constexpr uint16_t LoadStripMaxWidth = Width - 2 * (LoadReferenceWidth + LoadReferenceInset);
+constexpr uint16_t loadStripWidth(uint32_t requested) {
+  return uint16_t((requested < LoadStripMaxWidth ? requested : LoadStripMaxWidth) / 16 * 16);
+}
 
 // Original binary test artwork. Chunky shapes expose retained outlines without
 // confusing intentional pixel noise with drive noise. The seed replays exactly.
@@ -20,28 +31,40 @@ constexpr bool usesRelativeGray(TestImage image) {
          image == TestImage::LinearRamp;
 }
 
-inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
-  if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard) {
-    const bool flipRows = image == TestImage::LoadCheckerboard;
-    for (uint16_t y = 0; y < Height; ++y)
-      std::memset(plane.data() + size_t(y) * (Width / 8),
-                  flipRows && (y & 1) ? 0x55 : 0xAA, Width / 8);
-
+inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
+  if (image == TestImage::LoadStripes || image == TestImage::LoadCheckerboard ||
+      image == TestImage::LoadStrip) {
     // Identical, row-balanced reference patches embedded in the load. Fixed
     // two-pixel stripes give a middle tone using only the B/W waveform.
-    constexpr uint16_t patchX[][2] = {{16, 416}, {144, 544}, {280, 680}};
-    constexpr uint16_t patchY[] = {72, 208, 344};
-    constexpr size_t swatchBytes = 32 / 8;
-    for (size_t band = 0; band < 3; ++band) {
-      for (uint16_t y = patchY[band]; y < patchY[band] + 64; ++y) {
-        for (uint16_t x : patchX[band]) {
-          auto* swatches = plane.data() + size_t(y) * (Width / 8) + x / 8;
-          std::memset(swatches, 0x00, swatchBytes);
-          std::memset(swatches + swatchBytes, 0xCC, swatchBytes);
-          std::memset(swatches + 2 * swatchBytes, 0xFF, swatchBytes);
-        }
+    auto reference = [](uint8_t* row, uint16_t x) {
+      constexpr size_t swatchBytes = LoadSwatchWidth / 8;
+      auto* swatches = row + x / 8;
+      std::memset(swatches, 0x00, swatchBytes);
+      std::memset(swatches + swatchBytes, 0xCC, swatchBytes);
+      std::memset(swatches + 2 * swatchBytes, 0xFF, swatchBytes);
+    };
+    const bool strip = image == TestImage::LoadStrip;
+    const auto switchingWidth = strip ? loadStripWidth(argument)
+        : image == TestImage::LoadCheckerboard ? Width : 0;
+    const size_t leftByte = (Width - switchingWidth) / 16;
+    for (uint16_t y = 0; y < Height; ++y) {
+      auto* row = plane.data() + size_t(y) * (Width / 8);
+      std::memset(row, 0xAA, Width / 8);
+      if (y & 1) std::memset(row + leftByte, 0x55, switchingWidth / 8);
+      if (strip) {
+        // Full-height triplets avoid adding transitions at patch boundaries.
+        reference(row, LoadReferenceInset);
+        reference(row, Width - LoadReferenceInset - LoadReferenceWidth);
       }
     }
+    if (strip) return;
+
+    constexpr uint16_t patchX[][2] = {{16, 416}, {144, 544}, {280, 680}};
+    constexpr uint16_t patchY[] = {72, 208, 344};
+    for (size_t band = 0; band < 3; ++band)
+      for (uint16_t y = patchY[band]; y < patchY[band] + 64; ++y)
+        for (uint16_t x : patchX[band])
+          reference(plane.data() + size_t(y) * (Width / 8), x);
     return;
   }
 
@@ -83,7 +106,7 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t seed) {
       rect(340, y, (y - 240) * 220 / 180 + 1, 1, false);
     rect(415, 240, 7, 180, true);
   } else {
-    uint32_t state = seed ? seed : 0x584434u;
+    uint32_t state = argument ? argument : 0x584434u;
     auto next = [&]() {
       state ^= state << 13;
       state ^= state >> 17;

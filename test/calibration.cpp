@@ -369,6 +369,50 @@ int main() {
   assert(landscape.otpCalls == otpCount + 2 && landscape.uploads.size() == otpPlaneStart + 4);
   for (size_t i = 0; i < 4; ++i)
     assert(landscape.uploads[loadPlaneStart + i] == landscape.uploads[otpPlaneStart + i]);
+
+  // In the strip test the switch count is exact on every visible row after
+  // the first, including in the reference lanes. Each rail sees half the changes.
+  constexpr std::pair<uint32_t, int> stripWidths[] = {
+      {0, 0}, {240, 240}, {320, 320}, {400, 400}, {576, 576}, {255, 240}, {800, 576}};
+  for (const auto& [requested, width] : stripWidths) {
+    const auto uploads = landscape.uploads.size();
+    const auto activations = landscape.otpCalls;
+    assert(photo.startImage(13, x4render::TestImage::LoadStrip, requested) && photo.poll(14));
+    assert(photo.stripWidth() == width && landscape.uploads.size() == uploads + 2);
+    assert(landscape.otpCalls == activations + 1 && photo.factoryPreparation() && !photo.settleLut(0));
+    const auto& target = landscape.uploads[uploads];
+    for (int y = 0; y < x4render::Height; ++y) {
+      unsigned white = 0, toWhite = 0, toBlack = 0;
+      for (int x = 0; x < x4render::Width; ++x) {
+        const bool center = x >= (800 - width) / 2 && x < (800 + width) / 2;
+        bool expected = (x % 2 == 0) != (center && (y % 2 == 1));
+        for (int start : {16, 688}) {
+          const int offset = x - start;
+          if (offset >= 0 && offset < 96)
+            expected = offset >= 64 || (offset >= 32 && (offset / 2) % 2 == 0);
+        }
+        const bool bit = pixel(target, x, y);
+        assert(bit == expected);
+        assert(pixel(landscape.uploads[uploads + 1], x, y) != bit);
+        white += bit;
+        if (y && bit != pixel(target, x, y - 1)) {
+          toWhite += bit;
+          toBlack += !bit;
+        }
+      }
+      assert(white == x4render::Width / 2);
+      assert(toWhite == (y ? unsigned(width / 2) : 0) && toBlack == toWhite);
+    }
+    if (requested == 320) {
+      photo.bwPreparation.programmable = true;
+      assert(photo.startImage(15, x4render::TestImage::LoadStrip, requested) && photo.poll(16));
+      assert(landscape.fullBw && !photo.settleLut(0) && landscape.uploads.size() == uploads + 4);
+      assert(landscape.otpCalls == activations + 1);
+      assert(landscape.uploads[uploads] == landscape.uploads[uploads + 2]);
+      assert(landscape.uploads[uploads + 1] == landscape.uploads[uploads + 3]);
+      photo.bwPreparation.programmable = false;
+    }
+  }
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

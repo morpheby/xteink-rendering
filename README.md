@@ -76,10 +76,16 @@ palette. With `Mode::SingleSettle`, the mask starts with changed pixels.
 `Mode::DitherSettle` also includes connected gray pixels from both frames.
 Both modes can use `GrayRefresh` under an exclusive transport lease, with
 a factory-derived B/W bank and a calibrated settle bank. It uses at most
-three column zones for each stage and can reject a frame before touching
-the panel. The caller commits frame history after all activations and
+three column zones for each stage. Split B/W preparation ends with a
+panel-wide VCOM-matched hold. It can reject an over-budget frame before
+touching the panel. The caller commits frame history after all activations and
 power-off complete. In single-settle mode, gray pixels get their reset in
 the combined LUT and bypass the endpoint preparation pass.
+
+`Frames::planPreview` uses ordered B/W for the changed portion of a
+known frame. After a successful preview, call `commitPreview`. The next
+normal plan includes the union of previewed pixels and any new changes,
+even when the final input equals the last fully rendered gray frame.
 
 Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
 The public-domain photo and upstream credits are in the

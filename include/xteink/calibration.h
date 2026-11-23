@@ -57,6 +57,7 @@ class Calibration {
   GrayDither grayDither{GrayDither::Bayer};
   ZoneFinish zoneFinish{ZoneFinish::Off};
   bool grayZoneGuard{false};
+  bool zoneGraySettle{false};
   bool verticalWindowValidated{false}, croppedUploadValidated{false},
       verbose{false};
   bool start(uint32_t now, bool prepare = true, bool rotate = false,
@@ -93,6 +94,7 @@ class Calibration {
   bool zoneRequested() const { return zoneRequested_; }
   const BwZonePlan& zonePlan() const { return zonePlan_; }
   ZoneFinish appliedZoneFinish() const { return appliedZoneFinish_; }
+  uint8_t graySettlePasses() const { return completedGrayPasses_; }
   BwLoad requestedBwLoad() const { return requestedBwLoad_; }
   BwLoad renderedBwLoad() const { return renderedBwLoad_; }
   BwSourceCharge bwCharge() const { return bwCharge_; }
@@ -113,6 +115,7 @@ class Calibration {
     stripPlan_.count = nextStrip_ = 0;
     zonePlan_ = {};
     appliedZoneFinish_ = ZoneFinish::Off;
+    plannedGrayPasses_ = completedGrayPasses_ = 0;
     zoneRequested_ = false;
     protectedFallback_ = false;
     repairedGray_ = false;
@@ -191,6 +194,10 @@ class Calibration {
       return finishBase(now);
     }
     if (job_ == Job::ZoneHold) return finishBase(now);
+    if (job_ == Job::Settle && usesRelativeGray(image_)) {
+      ++completedGrayPasses_;
+      if (completedGrayPasses_ < plannedGrayPasses_) return !beginSettle(now);
+    }
     return complete(now, !conditioning_ && image_ == TestImage::Calibration);
   }
   bool complete(uint32_t now, bool references) {
@@ -545,6 +552,11 @@ class Calibration {
           result_ = "zones require Factory Tuned or Replay, prime off";
           return false;
         }
+        if (zoneGraySettle && usesRelativeGray(image_) && holdRail != 0) {
+          fail();
+          result_ = "zoned gray settle requires Hold Code 0";
+          return false;
+        }
         return beginMasked(now);
       }
     }
@@ -748,12 +760,16 @@ class Calibration {
   bool beginSettle(uint32_t now) {
     first_.clear();
     second_.clear();
-    driveCount = 0;
-    requested = {};
     const bool fullImage = usesRelativeGray(image_);
+    if (!completedGrayPasses_) {
+      driveCount = 0;
+      requested = {};
+      if (fullImage) plannedGrayPasses_ = zoneGraySettle && zonePlan_.count > 1 ? zonePlan_.count : 1;
+    }
     if (fullImage) {
       const auto settings = imageSettings();
       paintRelativeMixes(image_, imageArgument_, settings, [&](uint16_t x, uint16_t y, ShadeMix mix) {
+        if (plannedGrayPasses_ > 1 && zonePlan_.owners[x / 8] != completedGrayPasses_) return;
         const size_t index = size_t(y) * Width + x;
         auto shade = mix.sample(x, y, settings.columnDither);
         if (repairedGray_ && mix.canSwapBase())
@@ -817,6 +833,7 @@ class Calibration {
   uint32_t imageArgument_{0}, baseCompleted_{0};
   uint32_t maskedStarted_{0}, zoneWaitMs_{0};
   ZoneFinish appliedZoneFinish_{ZoneFinish::Off};
+  uint8_t plannedGrayPasses_{0}, completedGrayPasses_{0};
   BwStripPlan stripPlan_{};
   BwZonePlan zonePlan_{};
   bool zoneRequested_{false};

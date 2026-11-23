@@ -738,6 +738,40 @@ int main() {
     assert(texture.poll(110) && texture.cycles == cycles + 1);
   }
 
+  texture.grayDither = x4render::GrayDither::Bayer;
+  texture.zoneFinish = x4render::ZoneFinish::Hold;
+  const auto full = textureTransport.uploads.size();
+  assert(texture.startImage(120, x4render::TestImage::LinearRamp));
+  assert(texture.zonePlan().count == 3);
+  for (uint32_t tick = 121; tick < 125; ++tick) assert(!texture.poll(tick));
+  assert(texture.poll(125) && texture.graySettlePasses() == 1);
+  const auto pixels = texture.driveCount;
+  const auto splitGray = textureTransport.uploads.size();
+  const auto splitLuts = textureTransport.banks.size();
+  texture.zoneGraySettle = true;
+  texture.holdRail = 1;
+  assert(!texture.startImage(130, x4render::TestImage::LinearRamp));
+  assert(textureTransport.uploads.size() == splitGray);
+  texture.holdRail = 0;
+  assert(texture.startImage(140, x4render::TestImage::LinearRamp));
+  const auto planGray = texture.zonePlan();
+  assert(planGray.count == 3);
+  for (uint32_t tick = 141; tick < 147; ++tick) assert(!texture.poll(tick));
+  assert(texture.poll(147) && texture.graySettlePasses() == 3 && texture.driveCount == pixels);
+  for (size_t pass = 0; pass < 4; ++pass)
+    for (size_t plane = 0; plane < 2; ++plane)
+      assert(textureTransport.uploads[full + 2 * pass + plane] ==
+             textureTransport.uploads[splitGray + 2 * pass + plane]);
+  for (uint8_t pass = 0; pass < 3; ++pass) {
+    assert(textureTransport.banks[splitLuts + 4 + pass] == textureTransport.banks[splitLuts - 1]);
+    for (size_t plane = 0; plane < 2; ++plane) {
+      const auto& reference = textureTransport.uploads[full + 8 + plane];
+      const auto& masked = textureTransport.uploads[splitGray + 8 + 2 * pass + plane];
+      for (size_t i = 0; i < x4render::PlaneBytes; ++i)
+        assert(masked[i] == (planGray.owners[i % (x4render::Width / 8)] == pass ? reference[i] : 0));
+    }
+  }
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

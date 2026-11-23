@@ -784,6 +784,32 @@ int main() {
     }
   }
 
+  // The recalibration chart exercises the installed zone recipe while
+  // comparing all four white-start outputs on every reference row.
+  texture.imagePalette = measured;
+  const auto whiteChart = textureTransport.uploads.size();
+  assert(texture.startImage(150, x4render::TestImage::WhiteCandidates));
+  const auto whitePlan = texture.zonePlan();
+  assert(whitePlan.count == 3);
+  for (uint32_t tick = 151; tick < 157; ++tick) assert(!texture.poll(tick));
+  assert(texture.poll(157) && texture.graySettlePasses() == 3);
+  for (uint8_t row = 0; row < 4; ++row) {
+    const uint16_t y = x4render::WhiteCandidateTop + row * x4render::WhiteCandidateRowPitch + 8;
+    uint8_t seen = 0;
+    for (uint8_t col = 0; col < 4; ++col) {
+      const uint16_t x = x4render::WhiteCandidateLeft + col * x4render::WhiteCandidateWidth + 24;
+      const uint8_t id = x4render::whiteCandidateId(row, col);
+      seen |= 1u << (id - 4);
+      const uint8_t owner = whitePlan.owners[x / 8];
+      const auto output = whiteChart + 8 + 2 * owner;
+      const auto shade = x4render::relativeShade(id, 0);
+      assert(pixel(textureTransport.uploads[whiteChart + 2 * owner], x, y));
+      assert(pixel(textureTransport.uploads[output], x, y) == bool(shade.selector & 1));
+      assert(pixel(textureTransport.uploads[output + 1], x, y) == bool(shade.selector & 2));
+    }
+    assert(seen == 0x0f);
+  }
+
   const auto oldUploads = landscape.uploads.size();
   assert(photo.start(6, false));
   assert(landscape.uploads.size() == oldUploads + 2);  // photo is not calibration refs

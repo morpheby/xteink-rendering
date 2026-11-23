@@ -6,7 +6,8 @@ namespace x4render {
 enum class TestImage : uint8_t { Calibration, White, Black, Reference, Random,
                                 LandscapeDither, LandscapeGray, NeighborSweep, LinearRamp,
                                 RampBase, RampInverse, LoadStripes, LoadCheckerboard,
-                                LoadStrip, SplitCheckerboard, BwPhoto, BwChecker, BwBoiler };
+                                LoadStrip, SplitCheckerboard, BwPhoto, BwChecker, BwBoiler,
+                                WhiteCandidates };
 
 // Leave space for a 96-column reference triplet and a 16-column margin on
 // each side. Steps of 16 keep both edges of the centered strip byte aligned.
@@ -85,7 +86,7 @@ constexpr bool isRampImage(TestImage image) {
 constexpr bool usesRelativeGray(TestImage image) {
   return image == TestImage::Reference || image == TestImage::Random ||
          image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
-         image == TestImage::LinearRamp;
+         image == TestImage::LinearRamp || image == TestImage::WhiteCandidates;
 }
 constexpr bool grayPreparationImage(TestImage image) {
   return usesRelativeGray(image) || isRampImage(image);
@@ -163,7 +164,7 @@ inline void paintTestImage(Buffer& plane, TestImage image, uint32_t argument) {
   plane.clear(image == TestImage::Black ? 0 : 255);
   if (image == TestImage::White || image == TestImage::Black ||
       image == TestImage::LandscapeGray || image == TestImage::NeighborSweep ||
-      image == TestImage::BwBoiler || isRampImage(image)) return;
+      image == TestImage::BwBoiler || image == TestImage::WhiteCandidates || isRampImage(image)) return;
   if (image == TestImage::LandscapeDither || image == TestImage::BwPhoto) {
     Settings bw;
     const uint16_t inset = image == TestImage::BwPhoto ? 0 : 20;
@@ -245,6 +246,12 @@ constexpr uint8_t NeighborRowHeight = 56;
 constexpr uint8_t NeighborSwatchHeight = 43;
 constexpr uint16_t neighborColumn(uint8_t step) {
   return uint16_t(unsigned(step) * Width / 17);
+}
+constexpr uint16_t WhiteCandidateLeft = 16, WhiteCandidateWidth = 192;
+constexpr uint16_t WhiteCandidateTop = 50, WhiteCandidateRowPitch = 43, WhiteCandidateHeight = 32;
+constexpr uint16_t WhiteCandidateMixTop = 234, WhiteCandidateMixPitch = 45, WhiteCandidateMixHeight = 32;
+constexpr uint8_t whiteCandidateId(uint8_t row, uint8_t column) {
+  return uint8_t(4 + ((row + column) % 4));
 }
 constexpr const char* shadeLabel(uint8_t id) {
   constexpr const char* labels[] = {"BLACK", "A BLACK", "B BLACK", "C BLACK",
@@ -353,6 +360,36 @@ void paintRelativeMixes(TestImage image, uint32_t seed, const Settings& settings
               emit(x, y, ShadeMix{dark, light, step});
       }
       break;
+    case TestImage::WhiteCandidates: {
+      // Every shade appears once in every row and column. Each patch spans
+      // four 48-pixel zone periods and uses the same white starting state.
+      for (uint8_t row = 0; row < 4; ++row) {
+        const uint16_t top = WhiteCandidateTop + row * WhiteCandidateRowPitch;
+        for (uint8_t col = 0; col < 4; ++col) {
+          const uint16_t left = WhiteCandidateLeft + col * WhiteCandidateWidth;
+          const auto shade = relativeShade(whiteCandidateId(row, col), 0);
+          for (uint16_t y = top; y < top + WhiteCandidateHeight; ++y)
+            for (uint16_t x = left; x < left + WhiteCandidateWidth; ++x)
+              emit(x, y, ShadeMix{shade, shade, 0});
+        }
+      }
+      for (uint8_t row = 0; row < 3; ++row) {
+        const auto dark = relativeShade(4 + row, 0), light = relativeShade(5 + row, 0);
+        const uint16_t top = WhiteCandidateMixTop + row * WhiteCandidateMixPitch;
+        for (uint8_t duty = 0; duty <= 16; ++duty)
+          for (uint16_t y = top; y < top + WhiteCandidateMixHeight; ++y)
+            for (uint16_t x = neighborColumn(duty); x < neighborColumn(duty + 1); ++x)
+              emit(x, y, ShadeMix{dark, light, duty});
+      }
+      // Keep a repeatable B/W load under the swatches so the A/B/C tones can
+      // be compared with the same zoning and post-zone hold as Linear Ramp.
+      Settings bw;
+      for (uint16_t x = 0; x < Width; ++x) {
+        const auto mix = quantizeMix(uint8_t(35 + (220u * x + (Width - 1) / 2) / (Width - 1)), bw);
+        for (uint16_t y = 390; y < 466; ++y) emit(x, y, mix);
+      }
+      break;
+    }
     default:
       break;
   }

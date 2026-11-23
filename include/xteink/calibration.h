@@ -68,7 +68,7 @@ class Calibration {
   // LoadStrip takes a width, SplitCheckerboard a per-rail budget, and random
   // artwork a seed. Repeat Image replays the same argument.
   bool startImage(uint32_t now, TestImage image, uint32_t argument = 0) {
-    if (busy() || image < TestImage::White || image > TestImage::BwBoiler) return false;
+    if (busy() || image < TestImage::White || image > TestImage::WhiteCandidates) return false;
     if (image == TestImage::BwBoiler && !boilerLuma) {
       result_ = "boiler snapshot unavailable; show dashboard first";
       return false;
@@ -440,6 +440,21 @@ class Calibration {
       text(8, NeighborTop + i * NeighborRowHeight + NeighborSwatchHeight + 2, label, 1);
     }
   }
+  void whiteCandidateLabels() {
+    text(8, 7, "WHITE CANDIDATES - SAME ROW REFERENCES", 2);
+    for (uint8_t row = 0; row < 4; ++row)
+      for (uint8_t col = 0; col < 4; ++col)
+        text(WhiteCandidateLeft + col * WhiteCandidateWidth + 5,
+             WhiteCandidateTop + row * WhiteCandidateRowPitch - 8,
+             shadeLabel(whiteCandidateId(row, col)), 1);
+    for (uint8_t row = 0; row < 3; ++row) {
+      char title[42];
+      std::snprintf(title, sizeof(title), "%s TO %s - 0 TO 16",
+                    shadeLabel(4 + row), shadeLabel(5 + row));
+      text(8, WhiteCandidateMixTop + row * WhiteCandidateMixPitch - 9, title, 1);
+    }
+    text(8, 380, "B-W LOAD REFERENCE", 1);
+  }
   bool beginPass(uint32_t now) {
     if (!prepare_) return beginSettle(now);
     references_ = false;
@@ -455,6 +470,7 @@ class Calibration {
       paintTestImage(second_, image_, imageArgument_);
       if (grayPreparationImage(image_) && !paintGrayBase()) return fail();
       if (image_ == TestImage::NeighborSweep) shadeChartLabels();
+      if (image_ == TestImage::WhiteCandidates) whiteCandidateLabels();
       if (isRampImage(image_)) {
         const auto ends = relativeRampEndpoints(imagePalette);
         char title[54];

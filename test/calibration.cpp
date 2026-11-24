@@ -106,6 +106,28 @@ int main() {
   assert(x4render::quantize(71, 1, 0, stableSettings).selector == 2);
   {
     using namespace x4render;
+    Frames clock;
+    assert(clock.allocate());
+    assert(clock.knowledge == Knowledge::Unknown);
+    constexpr Rect region{636, 10, 76, 34};
+    clock.draw(size_t(15) * Width + 650, 0);
+    clock.draw(size_t(15) * Width + 715, 0);  // Stale input outside the clock.
+    assert(!clock.planRegion({799, 10, 2, 1}, {}));
+    assert(clock.planRegion(region, {}) && clock.driven == 76 * 34);
+    GrayRefresh refresh(clock);
+    assert(refresh.plan(preparation(BwPreparation{}), {}, 160, 40, true));
+    Fake bus;
+    assert(refresh.start(bus, 0) && !refresh.poll(bus, 1) && refresh.poll(bus, 2));
+    assert(bus.bytes == 2 * (Width / 8) * region.height && bus.banks.size() == 1);
+    assert(bus.activation.x == 0 && bus.activation.y == 10 && bus.activation.height == 34);
+    assert(pixel(bus.oldRam, 650, 15) && !pixel(bus.newRam, 650, 15));
+    assert(!pixel(bus.oldRam, 715, 15) && !pixel(bus.newRam, 715, 15));
+    assert(pixel(bus.newRam, 640, 15));  // Refresh white behind the old glyphs.
+    clock.resetController();
+    assert(clock.plan({}) && clock.driven == Pixels);
+  }
+  {
+    using namespace x4render;
     Frames frame;
     assert(frame.allocate());
     frame.target.clear(60);

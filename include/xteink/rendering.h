@@ -242,6 +242,24 @@ class Frames {
   bool plan(Settings settings, bool force = false) {
     return planFrame(settings, force, false);
   }
+  // An absolute region may be driven with unknown controller RAM and no
+  // previous frame. Everything outside the selected rectangle stays on hold.
+  bool planRegion(Rect region, Settings settings) {
+    if (busy() || !target.data() || region.empty() ||
+        region.x + region.width > Width || region.y + region.height > Height ||
+        !settings.palette.valid() ||
+        (settings.mode != Mode::BwDither && !settings.palette.calibrated))
+      return false;
+    current = settings;
+    requested = expanded = region;
+    mask.clear();
+    for (uint16_t y = region.y; y < region.y + region.height; ++y)
+      for (uint16_t x = region.x; x < region.x + region.width; ++x)
+        packedBit(mask, size_t(y) * Width + x, true);
+    driven = uint32_t(region.width) * region.height;
+    phase = Phase::Planned;
+    return true;
+  }
   bool planPreview(uint8_t margin) {
     if (busy() || knowledge != Knowledge::Known || !previewMask_.allocate(PlaneBytes) ||
         !previewWhite_.allocate(PlaneBytes)) return false;

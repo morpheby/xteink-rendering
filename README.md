@@ -92,6 +92,12 @@ The caller can use `directBwPreviewBank()` for a single endpoint pulse.
 Pass `windowedUpload = true` to `GrayRefresh::plan` to upload and
 activate only the affected rows, with full-width addressing.
 
+`Frames::planRegion` drives an entire rectangle even with unknown
+history. Populate the whole rectangle, including its background. After
+completion, reset frame knowledge before returning to differential
+rendering. The ESPHome component exposes this as `select_region` and
+`update`.
+
 Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
 The public-domain photo and upstream credits are in the
 [asset notes](assets/README.md).

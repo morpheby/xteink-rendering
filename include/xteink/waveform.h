@@ -45,6 +45,18 @@ constexpr uint8_t Row[4] = {4, 2, 3, 1};
 constexpr uint8_t phaseCode(uint8_t rail, uint8_t frames) {
   return frames ? uint8_t((rail << 6) | frames) : 0;
 }
+
+// A temporary endpoint drive from any starting shade. Keep the neutral
+// source rows synchronized with VCOM and omit inversion and conditioning.
+constexpr LutBank directBwPreviewBank() {
+  constexpr uint8_t frames = 16;
+  constexpr Lut neutral{1, frames, 1, 0, 0, 1, 1};
+  LutBank bank{neutral, neutral, neutral, neutral, neutral};
+  bank[Row[1]][1] = phaseCode(2, frames);
+  bank[Row[2]][1] = phaseCode(1, frames);
+  return bank;
+}
+
 constexpr LutBank candidates(std::array<Pulse, 3> p, uint8_t holdRail = 0) {
   LutBank out{};
   uint16_t longest = 1;

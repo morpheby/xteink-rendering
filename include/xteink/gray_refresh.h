@@ -61,13 +61,17 @@ class GrayRefresh {
   enum class Stage : uint8_t { Idle, PowerOn, Prepare, Hold, Settle, Done, Failed };
   explicit GrayRefresh(Frames& frames) : frames_(frames) {}
 
-  bool plan(const LutBank& bw, const LutBank& settle, unsigned railBudget, unsigned localBudget) {
+  bool plan(const LutBank& bw, const LutBank& settle, unsigned railBudget, unsigned localBudget,
+            bool windowedUpload = false) {
     bw_ = bw;
     bw_[Row[0]] = bw_[Row[3]] = bw_[0];
     settle_ = settle;
     zones_ = {};
     pass_ = 0;
     stage = Stage::Idle;
+    const auto lines = frames_.expanded.fullLines();
+    window_ = windowedUpload && !lines.empty() && lines.height < Height ? lines : FullPanel;
+    lastWindow_ = {};
     for (size_t i = 0; i < zones_.size(); ++i) {
       if (!encodeGrayPass(frames_, i != 0)) continue;
       zones_[i] = grayPassZones(frames_, i != 0, railBudget, localBudget);
@@ -82,6 +86,7 @@ class GrayRefresh {
   uint8_t preparationPasses() const { return zones_[0].count; }
   uint8_t settlePasses() const { return zones_[1].count; }
   bool finishesPreparationWithHold() const { return preparationPasses() > 1; }
+  Rect lastWindow() const { return lastWindow_; }
 
   template <class Transport>
   bool start(Transport& transport, uint32_t now) {
@@ -102,7 +107,7 @@ class GrayRefresh {
         frames_.dtm1.clear();
         frames_.dtm2.clear();
         stage = Stage::Hold;
-        if (!activate(transport, now, false)) return fail();
+        if (!activate(transport, now, false, FullPanel)) return fail();
         return false;
       }
     }
@@ -129,23 +134,30 @@ class GrayRefresh {
     const auto& zones = zones_[settle];
     while (pass_ < zones.count) {
       if (!encodeGrayPass(frames_, settle, zones, pass_++)) continue;
-      if (!activate(transport, now, settle)) fail();
+      if (!activate(transport, now, settle, window_)) fail();
       return true;
     }
     return false;
   }
   template <class Transport>
-  bool activate(Transport& transport, uint32_t now, bool settle) {
-    constexpr typename Transport::Window full{0, 0, Width, Height};
+  bool activate(Transport& transport, uint32_t now, bool settle, Rect rows) {
+    const typename Transport::Window window{rows.x, rows.y, rows.width, rows.height};
+    const bool cropped = rows.height < Height;
     // NEW first. The controller may modify OLD when NEW is written.
-    return transport.upload(0x13, {frames_.dtm2.data(), PlaneBytes}, full, 0) &&
-           transport.upload(0x10, {frames_.dtm1.data(), PlaneBytes}, full, 0) &&
-           transport.activate(settle ? settle_ : bw_, full, false, now, !settle);
+    // Activation must scan only the uploaded rows. Pixels in other rows
+    // still have stale selectors in controller RAM.
+    if (!transport.upload(0x13, {frames_.dtm2.data(), PlaneBytes}, window, 0) ||
+        !transport.upload(0x10, {frames_.dtm1.data(), PlaneBytes}, window, 0) ||
+        !transport.activate(settle ? settle_ : bw_, window, cropped, now, !settle)) return false;
+    lastWindow_ = rows;
+    return true;
   }
 
+  static constexpr Rect FullPanel{0, 0, Width, Height};
   Frames& frames_;
   LutBank bw_{}, settle_{};
   std::array<BwZonePlan, 2> zones_{};
+  Rect window_{FullPanel}, lastWindow_{};
   uint8_t pass_{0};
 };
 }  // namespace x4render

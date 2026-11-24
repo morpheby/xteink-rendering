@@ -26,6 +26,7 @@ struct Fake {
   bool otp = false, vertical = false, fullBw = false, accepted = true;
   unsigned otpCalls = 0;
   Window activation{};
+  std::vector<Window> uploadWindows;
   std::vector<std::vector<uint8_t>> uploads;
   std::vector<x4render::LutBank> banks;
   std::vector<uint8_t> commands, hiddenFills;
@@ -48,6 +49,7 @@ struct Fake {
   bool upload(uint8_t command, Plane p, Window w, uint8_t hiddenFill = 0) {
     assert(p.size == 48000);
     commands.push_back(command);
+    uploadWindows.push_back(w);
     hiddenFills.push_back(hiddenFill);
     // Model a controller that advances OLD when NEW transmission begins.
     // Explicit OLD must be written afterward; absolute B/W must tolerate OLD.
@@ -102,6 +104,32 @@ int main() {
   assert(stableSettings.palette.calibrated);
   assert(x4render::quantize(71, 0, 0, stableSettings).selector == 2);
   assert(x4render::quantize(71, 1, 0, stableSettings).selector == 2);
+  {
+    using namespace x4render;
+    Frames frame;
+    assert(frame.allocate());
+    frame.target.clear(60);
+    assert(frame.plan(stableSettings));
+    frame.preparation();
+    assert(frame.prepared(true) && frame.settle() && frame.commit());
+    assert(frame.draw(100 * Width + 752, 255) && frame.planPreview(1));
+    GrayRefresh refresh(frame);
+    const auto direct = directBwPreviewBank();
+    assert(direct[Row[0]] == direct[0] && direct[Row[3]] == direct[0]);
+    assert(direct[Row[1]][1] == phaseCode(2, 16) && direct[Row[2]][1] == phaseCode(1, 16));
+    assert(refresh.plan(direct, {}, 96, 40, true));
+    Fake bus;
+    assert(refresh.start(bus, 0) && !refresh.poll(bus, 1) && refresh.poll(bus, 2));
+    assert(bus.commands == (std::vector<uint8_t>{0x13, 0x10}));
+    assert(bus.bytes == 600 && bus.banks.size() == 1 && bus.banks[0] == direct);
+    assert(bus.vertical && bus.activation.y == 99 && bus.activation.height == 3);
+    for (const auto w : bus.uploadWindows)
+      assert(w.x == 0 && w.width == Width && w.y == 99 && w.height == 3);
+    assert(pixel(bus.newRam, 752, 100) && !pixel(bus.oldRam, 752, 100));
+    assert(!pixel(bus.newRam, 760, 100) && !pixel(bus.oldRam, 760, 100));
+    assert(frame.commitPreview() && frame.plan(stableSettings));
+    assert(frame.driven == 9);
+  }
   {
     using namespace x4render;
     Frames frame;

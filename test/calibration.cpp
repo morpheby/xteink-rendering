@@ -109,12 +109,22 @@ int main() {
     Frames clock;
     assert(clock.allocate());
     assert(clock.knowledge == Knowledge::Unknown);
+    GrayRefresh refresh(clock);
+    assert(DefaultX4ProCalibration.valid());
+    assert(refresh.settings(Mode::DitherSettle).palette.count == 8);
+    auto replacement = DefaultX4ProCalibration;
+    replacement.relative.luminance[0] = 45;
+    assert(refresh.loadCalibration(replacement));
+    assert(refresh.settings(Mode::DitherSettle).palette.shades[1].luma == 45);
+    replacement.relative.luminance[1] = 45;
+    assert(!refresh.loadCalibration(replacement));
+    assert(refresh.calibration().relative.luminance[1] == 108);
     constexpr Rect region{636, 10, 76, 34};
     clock.draw(size_t(15) * Width + 650, 0);
     clock.draw(size_t(15) * Width + 715, 0);  // Stale input outside the clock.
     assert(!clock.planRegion({799, 10, 2, 1}, {}));
     assert(clock.planRegion(region, {}) && clock.driven == 76 * 34);
-    GrayRefresh refresh(clock);
+    assert(!refresh.loadCalibration(DefaultX4ProCalibration));
     assert(refresh.plan(preparation(BwPreparation{}), {}, 160, 40, true));
     Fake bus;
     assert(refresh.start(bus, 0) && !refresh.poll(bus, 1) && refresh.poll(bus, 2));
@@ -123,6 +133,16 @@ int main() {
     assert(pixel(bus.oldRam, 650, 15) && !pixel(bus.newRam, 650, 15));
     assert(!pixel(bus.oldRam, 715, 15) && !pixel(bus.newRam, 715, 15));
     assert(pixel(bus.newRam, 640, 15));  // Refresh white behind the old glyphs.
+    clock.resetController();
+    clock.draw(size_t(15) * Width + 650, 187);
+    assert(clock.planRegion(region, refresh.settings(Mode::DitherSettle)));
+    assert(refresh.plan(preparation(BwPreparation{}), candidates(refresh.calibration().relativePulses),
+                        96, 40, true));
+    Fake grayBus;
+    assert(refresh.start(grayBus, 3));
+    for (uint32_t now = 4; !refresh.poll(grayBus, now); ++now) assert(now < 10);
+    assert(grayBus.bytes == 4 * (Width / 8) * region.height && grayBus.banks.size() == 2);
+    assert(!pixel(grayBus.oldRam, 715, 15) && !pixel(grayBus.newRam, 715, 15));
     clock.resetController();
     assert(clock.plan({}) && clock.driven == Pixels);
   }

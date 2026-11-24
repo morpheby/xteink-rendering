@@ -1,6 +1,6 @@
 #pragma once
 #include "bw_strips.h"
-#include "waveform.h"
+#include "panel_calibration.h"
 
 namespace x4render {
 
@@ -59,7 +59,44 @@ inline BwZonePlan grayPassZones(Frames& frames, bool settle, unsigned railBudget
 class GrayRefresh {
  public:
   enum class Stage : uint8_t { Idle, PowerOn, Prepare, Hold, Settle, Done, Failed };
+  enum class FactoryPlan : uint8_t { Ready, UnsupportedWaveform, OverBudget };
   explicit GrayRefresh(Frames& frames) : frames_(frames) {}
+
+  const PanelCalibration& calibration() const { return calibration_; }
+  bool loadCalibration(const PanelCalibration& calibration) {
+    if (frames_.busy() || !calibration.valid()) return false;
+    calibration_ = calibration;
+    frames_.resetController();
+    return true;
+  }
+
+  Settings settings(Mode mode) const {
+    Settings result;
+    result.mode = mode;
+    if (mode == Mode::DitherSettle) result.palette = calibration_.relative.palette();
+    if (mode == Mode::SingleSettle) {
+      result.palette = measuredStablePalette(calibration_.stableLuminance);
+      result.singleMask = calibration_.singleSettleMask;
+    }
+    if (mode != Mode::BwDither) result.margin = calibration_.updateMargin;
+    return result;
+  }
+
+  FactoryPlan planFactory(const LutBank& factory, bool windowedUpload, bool preview = false) {
+    LutBank bw, settle{};
+    const auto mode = frames_.current.mode;
+    if (preview) {
+      bw = directBwPreviewBank();
+    } else {
+      if (!tuneFactoryBw(factory, calibration_.bw, bw)) return FactoryPlan::UnsupportedWaveform;
+      if (mode == Mode::SingleSettle && !stableGrayBank(bw, calibration_.stableFrames, settle))
+        return FactoryPlan::UnsupportedWaveform;
+      if (mode == Mode::DitherSettle) settle = candidates(calibration_.relativePulses);
+    }
+    const auto budget = preview || mode != Mode::BwDither ? calibration_.grayRailBudget : calibration_.bwRailBudget;
+    return plan(bw, settle, budget, calibration_.localRailBudget, windowedUpload)
+        ? FactoryPlan::Ready : FactoryPlan::OverBudget;
+  }
 
   bool plan(const LutBank& bw, const LutBank& settle, unsigned railBudget, unsigned localBudget,
             bool windowedUpload = false) {
@@ -124,6 +161,7 @@ class GrayRefresh {
   Stage stage{Stage::Idle};
 
  private:
+  PanelCalibration calibration_{DefaultX4ProCalibration};
   bool fail() {
     frames_.fail();
     stage = Stage::Failed;

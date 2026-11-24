@@ -180,16 +180,17 @@ struct FactoryBwTuning {
   uint8_t whiteReference = 0;
   int8_t driveTrim = 0;
   int8_t pauseTrim = 0;
+  constexpr bool valid() const {
+    return shakeFrames <= 8 && shakeCycles <= 4 && whiteReference <= 32 &&
+           driveTrim >= -8 && driveTrim <= 8 && pauseTrim >= -4 && pauseTrim <= 8;
+  }
 };
 
 // The verified full B/W table family uses two groups, pair repeats of one,
 // and two identical transition rows for each endpoint. Limit edits to that
 // shape. Copy the original byte-for-byte when all adjustments are zero.
 constexpr bool tuneFactoryBw(const LutBank& factory, FactoryBwTuning tuning, LutBank& result) {
-  if (tuning.shakeFrames > 8 || tuning.shakeCycles > 4 ||
-      tuning.whiteReference > 32 || tuning.driveTrim < -8 || tuning.driveTrim > 8 ||
-      tuning.pauseTrim < -4 || tuning.pauseTrim > 8)
-    return false;
+  if (!tuning.valid()) return false;
   const auto& vcom = factory[0];
   const int inverse = vcom[1];
   const int pause = vcom[2];

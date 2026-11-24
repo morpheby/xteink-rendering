@@ -13,15 +13,43 @@ algorithms do not depend on ESPHome. Buffer allocation uses PSRAM on ESP32.
   sweep of 17 swatches. Each shade carries its starting B/W state and its
   settle selector. `calibration.h` exposes transport-independent test images,
   waveform inspection, and asynchronous results.
+- `panel_calibration.h` supplies the calibrated X4 Pro defaults.
 - `bw_approximation.h`, `bw_strips.h` and `bw_source_charge.h` estimate
   relative loading and choose up to three exact interleaved zones. See the
   [panel findings and limits](docs/drive-load.md) before choosing a budget.
 
-## Repeat relative gray calibration
+## Load a calibration in C++ firmware
+
+`GrayRefresh` starts with `DefaultX4ProCalibration`. The profile holds the
+measured Dither Then Settle palette and coverage curves, pulse counts, and
+load budgets. The stable frame counts were tested visually. Their default
+input luminances are nominal until measured. Read the factory bank from
+the panel at the operating temperature and apply the profile to that bank.
+
+```cpp
+#include <xteink/gray_refresh.h>
+
+bool loadPanelCalibration(x4render::GrayRefresh& renderer,
+                          const x4render::RelativeGrayProfile& measured) {
+  auto profile = x4render::DefaultX4ProCalibration;
+  profile.relative = measured;
+  return renderer.loadCalibration(profile);
+}
+```
+
+Load a profile while the renderer is idle. Invalid data leaves the active
+profile in place. Plan the frame with `renderer.settings(mode)` and pass its
+temperature-selected factory bank to `renderer.planFactory(bank, true)`.
+The renderer builds the calibrated waveforms and applies the profile's
+source-drive budgets to the windowed update.
+
+## Repeat relative gray calibration in C++ firmware
 
 1. Use a supported factory table for B/W preparation and record the table,
    raw waveform, panel power settings, and test temperature. Maintain
    the same B/W and gray preparation for the photo and the fitted profile.
+   Construct `Calibration<Transport>` with the FreeInk controller transport
+   under an exclusive lease and call `allocate()` before starting a chart.
 2. Render `WhiteCandidates` to compare the white-start tones. Use
    `NeighborSweep` for all adjacent pairs and `LinearRamp` to check the fit
    against B/W dithering. These images are available through

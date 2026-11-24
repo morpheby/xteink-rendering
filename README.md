@@ -73,6 +73,8 @@ white endpoints while retaining their LUT selectors.
 `Frames::plan` compares the new and displayed frames in the selected
 palette. With `Mode::SingleSettle`, the mask starts with changed pixels.
 `Settings::margin` can add a square kernel around each of them.
+`Settings::singleMask` can fill the dirty rectangle and extend the mask
+around gray targets as a second kernel.
 `Mode::DitherSettle` also includes connected gray pixels from both frames.
 Both modes can use `GrayRefresh` under an exclusive transport lease, with
 a factory-derived B/W bank and a calibrated settle bank. It uses at most

@@ -69,6 +69,7 @@ struct Rect {
   }
 };
 enum class Mode : uint8_t { BwDither, SingleSettle, DitherSettle };
+enum class SingleMask : uint8_t { Pixels, Rectangle, RectangleGrayMargin };
 enum class Knowledge : uint8_t { Unknown, Expected, Known, Interrupted };
 enum class Phase : uint8_t {
   Idle,
@@ -119,6 +120,7 @@ struct Settings {
   Mode mode{Mode::BwDither};
   Palette palette{};
   uint8_t margin{0};
+  SingleMask singleMask{SingleMask::Pixels};
   bool columnDither{false};
   bool equivalent(const Settings& b) const {
     if (mode != b.mode || columnDither != b.columnDither || palette.revision != b.palette.revision ||
@@ -274,10 +276,9 @@ class Frames {
     driven = 0;
     const bool resync = !preview &&
         (force || knowledge != Knowledge::Known || !current.equivalent(previous));
-    std::array<ShadeMix, 256> previousMix, currentMix;
-    for (size_t i = 0; i < currentMix.size(); ++i) {
-      previousMix[i] = quantizeMix(i, previous);
-      currentMix[i] = quantizeMix(i, current);
+    for (size_t i = 0; i < currentMix_.size(); ++i) {
+      previousMix_[i] = quantizeMix(i, previous);
+      currentMix_[i] = quantizeMix(i, current);
     }
     for (uint16_t y = 0; y < Height; ++y)
       for (uint16_t x = 0; x < Width; ++x) {
@@ -287,32 +288,42 @@ class Frames {
         if (!resync && (preview || !wasPreview)) {
           const auto old = wasPreview
               ? Shade{0, uint8_t(packedBit(previewWhite_, i)), 0}
-              : previousMix[displayed[i]].sample(x, y, previous.columnDither);
-          if (same(old, currentMix[target[i]].sample(x, y, current.columnDither))) continue;
+              : previousMix_[displayed[i]].sample(x, y, previous.columnDither);
+          if (same(old, currentMix_[target[i]].sample(x, y, current.columnDither))) continue;
         }
         packedBit(mask, i, true);
         requested.include(x, y);
       }
-    // Margin includes only a small user-selected neighborhood; full-line
-    // padding never broadens this drive mask.
-    if (!resync && !requested.empty() && settings.margin) {
-      std::memcpy(dtm1.data(), mask.data(), PlaneBytes);
-      const int radius = settings.margin;
-      for (int y = requested.y; y < requested.y + requested.height; ++y)
-        for (int x = requested.x; x < requested.x + requested.width; ++x) {
-          if (!packedBit(dtm1, size_t(y) * Width + x)) continue;
-          for (int ny = std::max(0, y - radius); ny <= std::min(Height - 1, y + radius); ++ny)
-            for (int nx = std::max(0, x - radius); nx <= std::min(Width - 1, x + radius); ++nx)
-              packedBit(mask, size_t(ny) * Width + nx, true);
+    if (!resync && !requested.empty()) {
+      const bool single = settings.mode == Mode::SingleSettle;
+      if (single && settings.singleMask != SingleMask::Pixels)
+        for (uint16_t y = requested.y; y < requested.y + requested.height; ++y)
+          for (uint16_t x = requested.x; x < requested.x + requested.width; ++x)
+            packedBit(mask, size_t(y) * Width + x, true);
+      if (settings.margin) {
+        std::memcpy(dtm1.data(), mask.data(), PlaneBytes);
+        dilateMask(requested, settings.margin);
+        if (single && settings.singleMask == SingleMask::RectangleGrayMargin) {
+          dtm1.clear();
+          Rect graySeeds;
+          for (uint16_t y = 0; y < Height; ++y)
+            for (uint16_t x = 0; x < Width; ++x) {
+              const size_t i = size_t(y) * Width + x;
+              if (!packedBit(mask, i) || !currentMix_[target[i]].dark.selector) continue;
+              packedBit(dtm1, i, true);
+              graySeeds.include(x, y);
+            }
+          dilateMask(graySeeds, settings.margin);
         }
+      }
     }
     if (settings.mode == Mode::DitherSettle && !resync && !requested.empty()) {
       dtm1.clear();
       for (uint16_t y = 0; y < Height; ++y)
         for (uint16_t x = 0; x < Width; ++x) {
           const size_t i = size_t(y) * Width + x;
-          const auto old = previousMix[displayed[i]].sample(x, y, previous.columnDither);
-          const auto next = currentMix[target[i]].sample(x, y, current.columnDither);
+          const auto old = previousMix_[displayed[i]].sample(x, y, previous.columnDither);
+          const auto next = currentMix_[target[i]].sample(x, y, current.columnDither);
           if (old.selector || next.selector) packedBit(dtm1, i, true);
         }
       extendConnectedGray();
@@ -402,6 +413,15 @@ class Frames {
   uint32_t driven{0};
 
  private:
+  void dilateMask(const Rect& seeds, int radius) {
+    for (int y = seeds.y; y < seeds.y + seeds.height; ++y)
+      for (int x = seeds.x; x < seeds.x + seeds.width; ++x) {
+        if (!packedBit(dtm1, size_t(y) * Width + x)) continue;
+        for (int ny = std::max(0, y - radius); ny <= std::min(Height - 1, y + radius); ++ny)
+          for (int nx = std::max(0, x - radius); nx <= std::min(Width - 1, x + radius); ++nx)
+            packedBit(mask, size_t(ny) * Width + nx, true);
+      }
+  }
   // Use the eligibility plane as scratch and revisit only rows reached by
   // the flood. Horizontal runs close in two scans, including leftward growth.
   void extendConnectedGray() {
@@ -462,6 +482,7 @@ class Frames {
     hasPreview_ = false;
   }
   // Preview pixels hold B/W independently of the last complete gray frame.
+  std::array<ShadeMix, 256> previousMix_{}, currentMix_{};
   Buffer previewMask_, previewWhite_;
   bool hasPreview_{false};
 };

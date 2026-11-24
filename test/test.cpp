@@ -105,6 +105,25 @@ int main() {
     finish(interactive);
     assert(!interactive.hasPreview() && interactive.plan(settings) && !interactive.driven);
   }
+  for (const auto footprint : {SingleMask::Pixels, SingleMask::Rectangle,
+                               SingleMask::RectangleGrayMargin}) {
+    Frames region;
+    assert(region.allocate());
+    auto settings = gray(Mode::SingleSettle);
+    settings.margin = 1;
+    settings.singleMask = footprint;
+    region.draw(10 * Width + 11, 120);
+    assert(region.plan(settings));
+    finish(region);
+    region.draw(10 * Width + 10, 0);
+    region.draw(12 * Width + 8, 0);
+    assert(region.plan(settings));
+    assert(region.requested.width == 3 && region.requested.height == 3);
+    const unsigned expected = footprint == SingleMask::Pixels ? 17 :
+                              footprint == SingleMask::Rectangle ? 25 : 28;
+    assert(region.driven == expected);
+    assert(packedBit(region.mask, 10 * Width + 12) == (expected == 28));
+  }
   auto s = gray(Mode::DitherSettle);
   assert(s.palette.valid());
   assert(f.plan(s));

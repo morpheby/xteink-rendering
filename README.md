@@ -88,6 +88,9 @@ the combined LUT and bypass the endpoint preparation pass.
 known frame. After a successful preview, call `commitPreview`. The next
 normal plan includes the union of previewed pixels and any new changes,
 even when the final input equals the last fully rendered gray frame.
+The caller can use `directBwPreviewBank()` for a single endpoint pulse.
+Pass `windowedUpload = true` to `GrayRefresh::plan` to upload and
+activate only the affected rows, with full-width addressing.
 
 Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
 The public-domain photo and upstream credits are in the

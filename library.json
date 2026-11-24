@@ -1,1 +1,9 @@
-{"name":"xteink-rendering","version":"0.1.0","description":"Deterministic X4 rendering and experimental waveform calibration","build":{"includeDir":"include"}}
+{
+  "name": "xteink-rendering",
+  "version": "0.1.0",
+  "description": "Deterministic X4 rendering and experimental waveform calibration",
+  "build": {
+    "includeDir": "include"
+  },
+  "license": "MIT"
+}

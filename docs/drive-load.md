@@ -9,7 +9,7 @@ the verified cold-start power setup. Raising waveform dose was not a
 general fix. In the checkerboard the later one-polarity portions could
 still drive when the inversion was barely visible.
 
-In the centered-width experiment the user observed:
+The centered-width experiment on the test panel produced these results.
 
 | Driven width | Observation |
 | --- | --- |
@@ -21,7 +21,7 @@ In the centered-width experiment the user observed:
 One alternating row followed by one quiet transition performed better
 than eight active followed by eight quiet. Spreading each transition
 across staggered columns helped more than simply jittering its timing.
-The user heard repeated high-pitched crackling on failing patterns.
+Failing patterns sometimes produced repeated high-pitched crackling.
 These observations are consistent with finite source-rail recovery
 and local loading. The capacitances, rail currents and acoustic
 mechanism have not been measured.
@@ -54,10 +54,10 @@ later comparison. Both are diagnostic results for the tested unit and
 settings. An added hold pass changes the panel response, so use the same
 hold and masking when capturing and validating a palette.
 
-The boiler preset uses Factory Tuned, Row Repair 30%, Rail Budget 160,
-Local Budget 40, and Burst Headroom 80. The accepted optical gray profile
-used Bayer, Rail Budget 96, Local Budget 40, Panel Hold and matched gray
-zones. These are starting points for this panel and are not electrical
-ratings for other modules. Hold has been observed in test patterns.
-Validate repeated hold and physical completion before enabling
-differential updates on another panel.
+The [default profile](../include/xteink/panel_calibration.h) uses rail
+budgets of 160 for B/W and 96 for gray, with a local budget of 40. The
+renderer tries exact interleaved zones. The separate Row Repair and Column
+Stable approximations can change image texture and remain available for
+experiments. These scores are starting points for the tested UC8279 panel.
+Validate repeated hold and physical completion on another panel before
+relying on differential updates.

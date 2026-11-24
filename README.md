@@ -1,131 +1,109 @@
-# Xteink rendering and calibration
+# xteink-rendering
 
-Header-only C++17 rendering for the 800×480 X4 Pro panel. The consuming
-ESPHome component pins this library and the FreeInk transport. The host
-algorithms do not depend on ESPHome. Buffer allocation uses PSRAM on ESP32.
+**A very over-engineered e-ink driver overlay for the Xteink X4 Pro (UC8279).**
+Changing one clock digit turned out to require a surprising amount of bookkeeping.
 
-- `rendering.h` plans exact drive masks and builds the two wire planes.
-  `Frames` records previous and target luminance and commits history after
-  successful completion. Dither/settle connects affected old and new gray
-  regions. Activation uses full visible lines to avoid the observed x≈752
-  artifact. Upload extents are independent.
-- `gray_profile.h` provides measured shade palettes and a fit for an optical
-  sweep of 17 swatches. Each shade carries its starting B/W state and its
-  settle selector. `calibration.h` exposes transport-independent test images,
-  waveform inspection, and asynchronous results.
-- `panel_calibration.h` supplies the calibrated X4 Pro defaults.
-- `bw_approximation.h`, `bw_strips.h` and `bw_source_charge.h` estimate
-  relative loading and choose up to three exact interleaved zones. See the
-  [panel findings and limits](docs/drive-load.md) before choosing a budget.
+This header-only C++17 library renders to the X4 Pro's 800 × 480 UC8279 panel. It handles ordered B/W dithering, calibrated grayscale, regional updates after sleep, and test patterns for measuring a panel. It was developed with OpenAI Codex. The [ESPHome integration](https://github.com/morpheby/esphome-xteink/tree/codex/x4-rendering-calibration) uses it with the FreeInk SDK. C++ firmware can use it directly with a compatible transport.
 
-## Load a calibration in C++ firmware
+## Install
 
-`GrayRefresh` starts with `DefaultX4ProCalibration`. The profile holds the
-measured Dither Then Settle palette and coverage curves, pulse counts, and
-load budgets. The stable frame counts were tested visually. Their default
-input luminances are nominal until measured. Read the factory bank from
-the panel at the operating temperature and apply the profile to that bank.
+For ESPHome, follow the [ESPHome integration's quick start](https://github.com/morpheby/esphome-xteink/tree/codex/x4-rendering-calibration#quick-start). The integration already pins this library and FreeInk.
+
+For PlatformIO, add the library to your existing firmware environment. Pin a tested commit for reproducible builds.
+
+```ini
+lib_deps =
+    https://github.com/morpheby/xteink-rendering.git#codex/calibration
+```
+
+For CMake or another C++17 build, clone the repository and add `include/` to the compiler's include path. Include `<xteink/gray_refresh.h>` for rendering or `<xteink/calibration.h>` for test patterns. Keep the board and SPI transport in your firmware. On ESP32 the frame buffers use PSRAM when available.
+
+## Choose a rendering mode
+
+| C++ mode | What it does |
+| --- | --- |
+| `Mode::BwDither` | Uses ordered black and white pixels. The factory-derived B/W waveform updates the image. |
+| `Mode::SingleSettle` | Uses black, white, and three gray tones. Each gray selector combines a black reset and its lightening dose. |
+| `Mode::DitherSettle` | Dithers between adjacent measured shades. A B/W pass establishes the starting tones, followed by a gray settling pass. The default profile has eight physical tones. |
+
+A separate preview path uses a short direct B/W waveform for responsive touch feedback. On release, the normal renderer restores the gray image. An absolute regional update can repaint a clock or status rectangle after sleep without saving the frame buffers.
+
+## Draw and plan a region
+
+Create one `Frames` and `GrayRefresh` for a display. Call `frames.allocate()` once and check its result. Pixels use physical panel coordinates, with `0` for black and `255` for white. A region update needs every pixel inside the rectangle, including the background.
 
 ```cpp
 #include <xteink/gray_refresh.h>
 
-bool loadPanelCalibration(x4render::GrayRefresh& renderer,
-                          const x4render::RelativeGrayProfile& measured) {
+bool plan_region(x4render::Frames& frames, x4render::GrayRefresh& renderer,
+                 const x4render::LutBank& factory, x4render::Rect region,
+                 const uint8_t* luminance) {
+  if (!luminance || !frames.target.data() || frames.busy() || region.empty() ||
+      region.x + region.width > x4render::Width ||
+      region.y + region.height > x4render::Height)
+    return false;
+
+  for (unsigned row = 0; row < region.height; ++row) {
+    for (unsigned column = 0; column < region.width; ++column) {
+      const size_t index = size_t(region.y + row) * x4render::Width + region.x + column;
+      frames.draw(index, luminance[size_t(row) * region.width + column]);
+    }
+  }
+
+  if (!frames.planRegion(region, renderer.settings(x4render::Mode::DitherSettle)))
+    return false;
+  if (renderer.planFactory(factory, /*windowedUpload=*/true) !=
+      x4render::GrayRefresh::FactoryPlan::Ready) {
+    frames.fail();
+    return false;
+  }
+  return true;
+}
+```
+
+Here `factory` is the supported B/W bank read from the panel for the operating temperature, and `luminance` is a row-major rectangle. Hold an exclusive controller session while configuring panel power and calling `start()` and `poll()`. After `Stage::Done`, request panel power-off and check completion. Call `frames.resetController()` after a regional update so later differential updates rebuild their baseline.
+
+For a normal whole-frame or differential update, use `frames.plan(settings)` and `frames.commit()` after successful power-off. If the plan has zero driven pixels, you can commit without a transport transaction. If a transaction fails, call `frames.fail()` and resynchronize on the next normal refresh.
+
+## API at a glance
+
+| API | When to use it |
+| --- | --- |
+| `Frames::allocate()`, `draw(index, luma)` | Allocate the buffers and write the target image before planning. `index` is `y * Width + x`. |
+| `Frames::plan(settings, force)`, `planRegion(rect, settings)` | Plan a normal refresh or repaint an exact rectangle. A normal refresh can expand its mask to cover connected gray pixels. |
+| `GrayRefresh::settings(mode)`, `planFactory(bank, windowedUpload, preview)` | Select the profile's palette and build a factory-derived drive plan. Check for `Ready`, `UnsupportedWaveform`, or `OverBudget`. |
+| `GrayRefresh::start(transport, now)`, `poll(transport, now)` | Start and advance the asynchronous waveform. `now` is in milliseconds. When `poll()` returns `true`, inspect `stage` to distinguish completion from failure. The caller owns power-off and session release. |
+| `Frames::planPreview(margin)`, `commitPreview()` | Track a temporary B/W preview over a known image. Use `planFactory(..., true, true)` to select the direct waveform. The next normal update includes the previewed pixels. |
+| `Frames::commit()`, `fail()`, `resetController()` | Confirm a normal refresh, mark an interrupted transaction, or discard the display baseline after a region update or reset. |
+| `GrayRefresh::loadCalibration(profile)` | Validate and copy a replacement profile while idle. A successful load invalidates the old frame baseline. |
+| `Calibration<Transport>`, `fitCoverage(samples)` | Draw physical reference patterns and fit a measured 17-step curve. See the [calibration guide](docs/calibration.md). |
+
+## Use a different calibration
+
+The default profile includes the measured relative palette, seven coverage curves, pulse counts, and load budgets. The three Single Settle frame counts were visually tested. Their default input luminances are approximate until measured on the target panel.
+
+```cpp
+#include <xteink/gray_refresh.h>
+
+bool load_measured(x4render::GrayRefresh& renderer,
+                   const x4render::RelativeGrayProfile& measured) {
   auto profile = x4render::DefaultX4ProCalibration;
   profile.relative = measured;
   return renderer.loadCalibration(profile);
 }
 ```
 
-Load a profile while the renderer is idle. Invalid data leaves the active
-profile in place. Plan the frame with `renderer.settings(mode)` and pass its
-temperature-selected factory bank to `renderer.planFactory(bank, true)`.
-The renderer builds the calibrated waveforms and applies the profile's
-source-drive budgets to the windowed update.
+Use C++ firmware to measure a different panel. The [calibration guide](docs/calibration.md) explains the reference patterns, measurements, and profile fields.
 
-## Repeat relative gray calibration in C++ firmware
+## How it fits together
 
-1. Use a supported factory table for B/W preparation and record the table,
-   raw waveform, panel power settings, and test temperature. Maintain
-   the same B/W and gray preparation for the photo and the fitted profile.
-   Construct `Calibration<Transport>` with the FreeInk controller transport
-   under an exclusive lease and call `allocate()` before starting a chart.
-2. Render `WhiteCandidates` to compare the white-start tones. Use
-   `NeighborSweep` for all adjacent pairs and `LinearRamp` to check the fit
-   against B/W dithering. These images are available through
-   `Calibration::startImage(now, image)`. Call `poll(now)` until completion
-   and inspect `result()` before measuring the panel.
-3. Measure the raw shades and the 17 mix steps per pair. Average swatch
-   pixels in linear light and use local panel white for color-managed
-   comparisons. Normalize raw black and white to 0 and 255. Select only
-   visibly distinct shades. HDR HEIC needs explicit HDR decoding when
-   using the HDR representation for comparisons.
-4. Store the raw shade measurements in A/B/C-from-black, then
-   A/B/C-from-white order. Use zero only for omitted shades. Set each
-   coverage curve in sorted dark-to-light pair order with
-   `fitCoverage(samples)`. If a sweep does not provide a reliable
-   positive span, use the zero-initialized linear fallback and record
-   that choice. Inspect the measured ramp before adopting the profile.
+1. **Quantization.** `Frames` keeps the target and the last confirmed image in 8-bit luminance buffers. Dithering uses physical coordinates so a pixel's pattern stays consistent across full and partial draws.
+2. **Mask and planes.** The planner compares quantized states and encodes the selected pixels into the two UC8279 data planes. An absolute region only drives its requested pixels. Other columns in those rows use a hold selector.
+3. **Drive planning.** The library tunes a supported temperature-selected factory bank, estimates source-rail load, and tries up to three interleaved column zones. Windowed transfers upload the affected full-width rows. Full-width activation avoids an observed defect near x≈752 with horizontally bounded activation. See the [scan-load notes](docs/drive-load.md).
+4. **Hardware and state.** FreeInk owns controller discovery, SPI, power, and BUSY handling. Firmware owns the exclusive lease, the final power-off check, and when to commit history. The physical image, controller RAM, and software history are separate states.
 
-```cpp
-#include <xteink/gray_profile.h>
+## Test and contribute
 
-x4render::RelativeGrayProfile fit(const std::array<float, 17>& firstPair) {
-  x4render::RelativeGrayProfile profile;
-  profile.luminance = {35, 108, 187, 206, 232, 248};  // One measured panel.
-  if (auto curve = x4render::fitCoverage(firstPair)) profile.coverage[0] = *curve;
-  return profile;
-}
-// Build with profile.palette() and check palette.calibrated before use.
-```
+Run `python3 test/run.py` with a C++17 compiler that supports AddressSanitizer and UndefinedBehaviorSanitizer. The host tests exercise quantization, calibration, and transport sequencing. Use a physical panel to evaluate gray tone, ghosting, repeated hold, and timing. See [AGENTS.md](AGENTS.md) for maintenance and validation guidance.
 
-`fitCoverage` pools decreasing samples into a nondecreasing table. It
-preserves endpoint counts and keeps equal outputs for unresolved steps.
-A valid table does not establish that a waveform is optically stable.
-
-## Test stable gray candidates
-
-Use `Calibration::startStable(now, frames, rebuild, rotate)` with a verified
-factory-derived B/W bank for the panel temperature. The three frame counts
-set the lightening pulse lengths after the factory black reset. Rebuild to
-prepare black and white starts and initialize the held gray witness. Repeat
-or rotate the same counts to test convergence from previously displayed
-grays while retaining the reference patches.
-
-`stableGrayBank` builds the combined LUT for transport consumers.
-`measuredStablePalette` orders the three measured tones between the black and
-white endpoints while retaining their LUT selectors.
-
-## Use the calibrated profiles
-
-`Frames::plan` compares the new and displayed frames in the selected
-palette. With `Mode::SingleSettle`, the mask starts with changed pixels.
-`Settings::margin` can add a square kernel around each of them.
-`Settings::singleMask` can fill the dirty rectangle and extend the mask
-around gray targets as a second kernel.
-`Mode::DitherSettle` also includes connected gray pixels from both frames.
-Both modes can use `GrayRefresh` under an exclusive transport lease, with
-a factory-derived B/W bank and a calibrated settle bank. It uses at most
-three column zones for each stage. Split B/W preparation ends with a
-panel-wide VCOM-matched hold. It can reject an over-budget frame before
-touching the panel. The caller commits frame history after all activations and
-power-off complete. In single-settle mode, gray pixels get their reset in
-the combined LUT and bypass the endpoint preparation pass.
-
-`Frames::planPreview` uses ordered B/W for the changed portion of a
-known frame. After a successful preview, call `commitPreview`. The next
-normal plan includes the union of previewed pixels and any new changes,
-even when the final input equals the last fully rendered gray frame.
-The caller can use `directBwPreviewBank()` for a single endpoint pulse.
-Pass `windowedUpload = true` to `GrayRefresh::plan` to upload and
-activate only the affected rows, with full-width addressing.
-
-`Frames::planRegion` drives an entire rectangle even with unknown
-history. Populate the whole rectangle, including its background. After
-completion, reset frame knowledge before returning to differential
-rendering. The ESPHome component exposes this as `select_region` and
-`update`.
-
-Run `python3 test/run.py` for the host sanitizer tests. Code is MIT licensed.
-The public-domain photo and upstream credits are in the
-[asset notes](assets/README.md).
+The library is [MIT licensed](LICENSE). The landscape test asset has separate [public-domain attribution](assets/README.md).
